@@ -1,0 +1,202 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import lit, count, col, when, isnan, isnull
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, TimestampType, BooleanType
+from datetime import datetime
+
+def analyze_csv_files(adls_path, analysis_output_path, log_output_path):
+    """
+    Recursively analyzes CSV files in ADLS2 storage and outputs analysis metrics to Delta tables.
+    
+    Parameters:
+    adls_path (str): Path to the directory containing CSV files in ADLS2
+    analysis_output_path (str): Path where the analysis results Delta table will be saved
+    log_output_path (str): Path where the processing log Delta table will be saved
+    
+    Returns:
+    tuple: (analysis_df, log_df) - DataFrames containing the analysis results and processing log
+    """
+    
+    # Initialize Spark Session
+    spark = SparkSession.builder.appName("CSV Analysis").getOrCreate()
+    
+    # Function to recursively list all CSV files in the given path
+    def list_csv_files(path):
+        files = []
+        file_list = dbutils.fs.ls(path)
+        
+        for file_info in file_list:
+            if file_info.isDir():
+                # Recursively list files in subdirectory
+                files.extend(list_csv_files(file_info.path))
+            elif file_info.path.endswith(".csv"):
+                # Add CSV file to the list
+                files.append(file_info.path)
+        
+        return files
+    
+    # Function to extract filename from path
+    def extract_filename(path):
+        # Use the last part of the path after the last slash
+        return path.split("/")[-1]
+    
+    # Create schema for processing log
+    log_schema = StructType([
+        StructField("file_path", StringType(), False),
+        StructField("processing_timestamp", TimestampType(), False),
+        StructField("status", StringType(), False),
+        StructField("error_message", StringType(), True),
+        StructField("filename_valid", BooleanType(), True),
+        StructField("required_columns_exist", BooleanType(), True),
+        StructField("file_not_empty", BooleanType(), True)
+    ])
+    
+    # Create schema for analysis results
+    analysis_schema = StructType([
+        StructField("provider_name", StringType(), True),
+        StructField("category_name", StringType(), True),
+        StructField("column_name", StringType(), True),
+        StructField("row_count", IntegerType(), True),
+        StructField("null_count", IntegerType(), True),
+        StructField("extract_date", StringType(), True)
+    ])
+    
+    # Initialize lists to collect results
+    analysis_rows = []
+    log_entries = []
+    
+    # Get all CSV files
+    csv_files = list_csv_files(adls_path)
+    print(f"Found {len(csv_files)} CSV files for processing")
+    
+    # Process each CSV file
+    for file_path in csv_files:
+        # Get current timestamp for this file processing
+        current_ts = datetime.now()
+        
+        # Extract filename from path
+        filename = extract_filename(file_path)
+        
+        # Initialize log entry variables
+        filename_valid = False
+        required_columns_exist = False
+        file_not_empty = False
+        error_message = None
+        status = "FAILED"  # Default to failed, will update to SUCCESS if all goes well
+        
+        try:
+            # Validation 1: Check filename format (should be at least 12 characters long)
+            if len(filename) <= 12:
+                raise ValueError(f"Filename '{filename}' is too short. Expected at least 12 characters.")
+            filename_valid = True
+            
+            # Extract date from filename (first 8 characters)
+            extract_date = filename[:8]
+            # Validate date format (basic check: should be 8 digits)
+            if not extract_date.isdigit() or len(extract_date) != 8:
+                raise ValueError(f"Extract date '{extract_date}' is not in the expected format (8 digits).")
+            
+            # Extract category name (substring after 12th character of filename)
+            category_name = filename[12:]
+            # Remove file extension from category name
+            if category_name.endswith(".csv"):
+                category_name = category_name[:-4]
+            
+            # Read the CSV file
+            df = spark.read.option("header", "true").option("inferSchema", "true").csv(file_path)
+            
+            # Validation 2: Check if file is empty
+            row_count = df.count()
+            if row_count == 0:
+                raise ValueError(f"CSV file is empty.")
+            file_not_empty = True
+            
+            # Validation 3: Check for required columns
+            if "Provider name" not in df.columns:
+                raise ValueError(f"Required column 'Provider name' not found in the CSV.")
+            required_columns_exist = True
+            
+            # Get provider name from the first row (assuming it's the same for all rows)
+            provider_row = df.select("Provider name").first()
+            if provider_row is None:
+                raise ValueError(f"No data found in 'Provider name' column.")
+            provider_name = provider_row[0]
+            
+            # Analyze each column
+            for column in df.columns:
+                # Calculate row count and null count for each column
+                counts = df.select(
+                    count(col(column)).alias("row_count"),
+                    count(when(col(column).isNull() | isnan(col(column)), column)).alias("null_count")
+                ).collect()[0]
+                
+                col_row_count = counts["row_count"]
+                null_count = counts["null_count"]
+                
+                # Add a row with all required information to the results list
+                analysis_rows.append((
+                    provider_name,  # Provider Name
+                    category_name,  # Category name
+                    column,         # Column Name
+                    col_row_count,  # Row Count per Column Name
+                    null_count,     # Null Count per Column Name
+                    extract_date    # Extract Date
+                ))
+            
+            # Update status to indicate success
+            status = "SUCCESS"
+            
+        except Exception as e:
+            # Capture the error message
+            error_message = str(e)
+            print(f"Error processing {file_path}: {error_message}")
+        
+        # Add the log entry to the log entries list
+        log_entries.append((
+            file_path,
+            current_ts,
+            status,
+            error_message,
+            filename_valid,
+            required_columns_exist,
+            file_not_empty
+        ))
+    
+    # Create DataFrames from the collected results
+    if analysis_rows:
+        analysis_df = spark.createDataFrame(analysis_rows, analysis_schema)
+        
+        # Write analysis results to Delta table, partitioned by extract_date
+        analysis_df.write.format("delta").partitionBy("extract_date").mode("overwrite").save(analysis_output_path)
+        print(f"Analysis results written to {analysis_output_path}")
+    else:
+        print("No valid analysis results to write.")
+        analysis_df = spark.createDataFrame([], analysis_schema)
+    
+    # Create log DataFrame
+    log_df = spark.createDataFrame(log_entries, log_schema)
+    
+    # Write processing log to Delta table
+    log_df.write.format("delta").mode("overwrite").save(log_output_path)
+    print(f"Processing log written to {log_output_path}")
+    
+    # Display summary
+    success_count = log_df.filter(col("status") == "SUCCESS").count()
+    failure_count = log_df.filter(col("status") == "FAILED").count()
+    print(f"Processing complete. Successfully processed {success_count} files. Failed to process {failure_count} files.")
+    
+    # Show failed files for debugging
+    if failure_count > 0:
+        print("Failed files:")
+        log_df.filter(col("status") == "FAILED").select("file_path", "error_message").show(truncate=False)
+        
+    return analysis_df, log_df
+
+# Main execution - replace these paths with your actual ADLS2 paths
+if __name__ == "__main__":
+    # Set your ADLS paths here
+    adls_path = "abfss://container@storageaccount.dfs.core.windows.net/path/to/csv/files"
+    analysis_output_path = "abfss://container@storageaccount.dfs.core.windows.net/path/to/analysis_output"
+    log_output_path = "abfss://container@storageaccount.dfs.core.windows.net/path/to/processing_log"
+    
+    # Run the analysis
+    analyze_csv_files(adls_path, analysis_output_path, log_output_path)
