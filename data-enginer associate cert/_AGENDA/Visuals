@@ -1,0 +1,505 @@
+# =========================================================================
+# CELL 1: SETUP AND MAIN SARIMA ANALYSIS (NO VISUALS)
+# =========================================================================
+
+# Install and import packages
+%pip install pmdarima
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
+
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.tsa.stattools import adfuller
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+try:
+    from pmdarima import auto_arima
+    AUTO_ARIMA_AVAILABLE = True
+    print("✅ pmdarima imported successfully")
+except ImportError:
+    print("❌ pmdarima not available")
+    AUTO_ARIMA_AVAILABLE = False
+
+%matplotlib inline
+
+# Core analysis functions (no visuals)
+def prepare_student_data_clean(df):
+    """Prepare student enrollment data - clean version without visuals"""
+    print("📊 Data Preview:")
+    print(df.head())
+    print(f"\nColumns: {list(df.columns)}")
+    print(f"Shape: {df.shape}")
+    
+    # Handle month names
+    month_mapping = {
+        'January': 1, 'Jan': 1, 'February': 2, 'Feb': 2,
+        'March': 3, 'Mar': 3, 'April': 4, 'Apr': 4,
+        'May': 5, 'June': 6, 'Jun': 6,
+        'July': 7, 'Jul': 7, 'August': 8, 'Aug': 8,
+        'September': 9, 'Sep': 9, 'Sept': 9,
+        'October': 10, 'Oct': 10, 'November': 11, 'Nov': 11,
+        'December': 12, 'Dec': 12
+    }
+    
+    if df['Reporting_Month'].dtype == 'object':
+        print("🔄 Converting month names to numbers...")
+        df['Month_Num'] = df['Reporting_Month'].map(month_mapping)
+        month_col = 'Month_Num'
+    else:
+        month_col = 'Reporting_Month'
+        df['Month_Num'] = df['Reporting_Month']
+    
+    # Create datetime index
+    df['Date'] = pd.to_datetime({
+        'year': df['Reporting_Year'],
+        'month': df[month_col],
+        'day': 1
+    })
+    df = df.sort_values('Date').reset_index(drop=True)
+    ts = df.set_index('Date')['Student_Counts']
+    
+    print(f"\n📅 Time series created: {len(ts)} observations")
+    print(f"From: {ts.index[0]} to {ts.index[-1]}")
+    
+    return ts, df
+
+def fit_sarima_model_clean(ts_transformed, transformation='none'):
+    """Fit SARIMA model - clean version"""
+    print("\n🎯 Fitting SARIMA model...")
+    
+    best_model = None
+    best_aic = float('inf')
+    
+    configs = [
+        ((1,1,1), (1,1,1,12)),
+        ((2,1,1), (1,1,1,12)),
+        ((1,1,2), (1,1,1,12)),
+        ((0,1,1), (0,1,1,12)),
+        ((1,1,0), (1,1,0,12)),
+    ]
+    
+    for order, seasonal_order in configs:
+        try:
+            model = ARIMA(ts_transformed, order=order, seasonal_order=seasonal_order)
+            fitted = model.fit()
+            print(f"SARIMA{order}x{seasonal_order}[12] - AIC: {fitted.aic:.2f}")
+            
+            if fitted.aic < best_aic:
+                best_aic = fitted.aic
+                best_model = fitted
+                best_config = (order, seasonal_order)
+        except:
+            print(f"SARIMA{order}x{seasonal_order}[12] - Failed")
+    
+    if best_model:
+        print(f"\n✅ Best model: SARIMA{best_config[0]}x{best_config[1]}[12]")
+        print(f"   AIC: {best_aic:.2f}")
+        best_model.transformation = transformation
+        
+    return best_model
+
+def generate_forecasts_clean(model, ts_original):
+    """Generate forecasts - clean version"""
+    print("\n🔮 Generating 2025 forecasts...")
+    
+    forecast = model.forecast(steps=12)
+    conf_int = model.get_forecast(steps=12).conf_int()
+    
+    # Transform back if needed
+    if hasattr(model, 'transformation'):
+        if model.transformation == 'log':
+            forecast = np.exp(forecast) - 1
+            conf_int = np.exp(conf_int) - 1
+        elif model.transformation == 'sqrt':
+            forecast = forecast ** 2
+            conf_int = conf_int ** 2
+    
+    dates_2025 = pd.date_range('2025-01-01', '2025-12-01', freq='MS')
+    
+    forecast_df = pd.DataFrame({
+        'Date': dates_2025,
+        'Month': dates_2025.strftime('%B'),
+        'Forecast': forecast.round(0),
+        'Lower_CI': conf_int.iloc[:, 0].round(0),
+        'Upper_CI': conf_int.iloc[:, 1].round(0)
+    })
+    
+    print("✅ 2025 forecasts generated successfully!")
+    return forecast_df
+
+def run_core_sarima_analysis(base_data):
+    """Run core SARIMA analysis without visuals"""
+    print("🚀 Starting Core SARIMA Analysis")
+    print("="*50)
+    
+    try:
+        # Prepare data
+        ts, df = prepare_student_data_clean(base_data)
+        
+        # Handle seasonality
+        print("\n🔄 Testing transformations...")
+        ts_log = np.log(ts + 1)
+        ts_sqrt = np.sqrt(ts)
+        
+        cv_original = ts.std() / ts.mean()
+        cv_log = ts_log.std() / ts_log.mean()
+        cv_sqrt = ts_sqrt.std() / ts_sqrt.mean()
+        
+        if cv_log < cv_original and cv_log < cv_sqrt:
+            print("✅ Using LOG transformation")
+            ts_transformed, transformation = ts_log, 'log'
+        elif cv_sqrt < cv_original:
+            print("✅ Using SQRT transformation")
+            ts_transformed, transformation = ts_sqrt, 'sqrt'
+        else:
+            print("✅ Using ORIGINAL data")
+            ts_transformed, transformation = ts, 'none'
+        
+        # Fit model
+        model = fit_sarima_model_clean(ts_transformed, transformation)
+        
+        if model:
+            # Generate forecasts
+            forecast_df = generate_forecasts_clean(model, ts)
+            
+            print(f"\n🎉 Core Analysis Complete!")
+            return ts, df, model, forecast_df, transformation
+        else:
+            print("❌ Model fitting failed")
+            return None, None, None, None, None
+            
+    except Exception as e:
+        print(f"❌ Error in analysis: {e}")
+        return None, None, None, None, None
+
+# Load and run core analysis
+file_path = "abfs://folder2@printxpp.dfs.core.windows.net/scratch/opts/data.csv"
+base_data_spark = spark.read.option("header","true").option("inferSchema","true").csv(file_path)
+base_data = base_data_spark.toPandas()
+
+print("✅ Data loaded successfully!")
+print(f"Shape: {base_data.shape}")
+print(f"Columns: {list(base_data.columns)}")
+
+# Run core analysis
+ts, df, model, forecast_df, transformation = run_core_sarima_analysis(base_data)
+
+if forecast_df is not None:
+    print("\n🎯 QUICK PREVIEW OF KEY RESULTS:")
+    jan_forecast = forecast_df[forecast_df['Month'] == 'January']['Forecast'].iloc[0]
+    feb_forecast = forecast_df[forecast_df['Month'] == 'February']['Forecast'].iloc[0]
+    mar_forecast = forecast_df[forecast_df['Month'] == 'March']['Forecast'].iloc[0]
+    
+    print(f"📅 January 2025:  {jan_forecast:>8.0f} students")
+    print(f"📅 February 2025: {feb_forecast:>8.0f} students")
+    print(f"📅 March 2025:    {mar_forecast:>8.0f} students")
+    print(f"📈 Feb→Mar surge: {((mar_forecast - feb_forecast) / feb_forecast * 100):>7.0f}%")
+    
+    print("\n💾 Data objects created successfully! Run the next cells for detailed tables and visuals.")
+else:
+    print("❌ Analysis failed - check your data")
+
+# =========================================================================
+# CELL 2: PREDICTION TABLE WITH CONFIDENCE ANALYSIS
+# =========================================================================
+
+def create_detailed_prediction_table(forecast_df):
+    """Create detailed prediction table with confidence analysis"""
+    print("📋 Creating Detailed Prediction Table...")
+    
+    # Calculate confidence metrics
+    prediction_table = forecast_df.copy()
+    
+    # Calculate confidence interval width
+    prediction_table['CI_Width'] = prediction_table['Upper_CI'] - prediction_table['Lower_CI']
+    prediction_table['Relative_CI_Width'] = (prediction_table['CI_Width'] / prediction_table['Forecast']) * 100
+    
+    # Assign confidence ratings
+    def assign_confidence_rating(rel_width):
+        if rel_width <= 10:
+            return "Very High"
+        elif rel_width <= 20:
+            return "High" 
+        elif rel_width <= 35:
+            return "Medium"
+        elif rel_width <= 50:
+            return "Low"
+        else:
+            return "Very Low"
+    
+    prediction_table['Confidence_Rating'] = prediction_table['Relative_CI_Width'].apply(assign_confidence_rating)
+    
+    # Create clean display table
+    display_table = pd.DataFrame({
+        'Month': prediction_table['Month'],
+        'Predicted_Students': prediction_table['Forecast'].astype(int),
+        'Lower_Bound': prediction_table['Lower_CI'].astype(int),
+        'Upper_Bound': prediction_table['Upper_CI'].astype(int),
+        'Confidence_Rating': prediction_table['Confidence_Rating'],
+        'Uncertainty_Range': prediction_table['CI_Width'].astype(int),
+        'Uncertainty_Percent': prediction_table['Relative_CI_Width'].round(1)
+    })
+    
+    return display_table
+
+# Run this cell to display the prediction table
+if 'forecast_df' in globals() and forecast_df is not None:
+    print("📋 2025 STUDENT ENROLLMENT PREDICTIONS WITH CONFIDENCE ANALYSIS")
+    print("="*80)
+    
+    detailed_table = create_detailed_prediction_table(forecast_df)
+    print(detailed_table.to_string(index=False))
+    
+    # Summary statistics
+    high_confidence = len(detailed_table[detailed_table['Confidence_Rating'].isin(['Very High', 'High'])])
+    medium_confidence = len(detailed_table[detailed_table['Confidence_Rating'] == 'Medium'])
+    low_confidence = len(detailed_table[detailed_table['Confidence_Rating'].isin(['Low', 'Very Low'])])
+    
+    print(f"\n📊 CONFIDENCE SUMMARY:")
+    print(f"   High confidence months: {high_confidence}/12")
+    print(f"   Medium confidence months: {medium_confidence}/12") 
+    print(f"   Low confidence months: {low_confidence}/12")
+    print(f"   Average uncertainty: ±{detailed_table['Uncertainty_Percent'].mean():.1f}%")
+    
+    # Seasonal insights
+    march_pred = detailed_table[detailed_table['Month'] == 'March']['Predicted_Students'].iloc[0]
+    jan_pred = detailed_table[detailed_table['Month'] == 'January']['Predicted_Students'].iloc[0]
+    
+    print(f"\n🌊 SEASONAL SURGE ANALYSIS:")
+    print(f"   January enrollment: {jan_pred:,} students")
+    print(f"   March enrollment: {march_pred:,} students") 
+    print(f"   Seasonal increase: {((march_pred - jan_pred) / jan_pred * 100):.0f}%")
+    
+else:
+    print("❌ No forecast data available. Run Cell 1 first.")
+
+# =========================================================================
+# CELL 3: COMPLETE TIME SERIES DATA (2021-2025)
+# =========================================================================
+
+def create_complete_timeseries(ts, forecast_df):
+    """Create complete 2021-2025 time series"""
+    print("📈 Creating Complete 2021-2025 Time Series...")
+    
+    # Historical data
+    historical_df = pd.DataFrame({
+        'Date': ts.index,
+        'Student_Counts': ts.values,
+        'Type': 'Historical',
+        'Lower_CI': ts.values,
+        'Upper_CI': ts.values
+    })
+    
+    # Forecast data
+    forecast_clean = pd.DataFrame({
+        'Date': forecast_df['Date'],
+        'Student_Counts': forecast_df['Forecast'],
+        'Type': 'Forecasted',
+        'Lower_CI': forecast_df['Lower_CI'],
+        'Upper_CI': forecast_df['Upper_CI']
+    })
+    
+    # Combine
+    complete_ts = pd.concat([historical_df, forecast_clean], ignore_index=True)
+    complete_ts = complete_ts.sort_values('Date').reset_index(drop=True)
+    
+    # Add time components
+    complete_ts['Year'] = complete_ts['Date'].dt.year
+    complete_ts['Month'] = complete_ts['Date'].dt.month
+    complete_ts['Month_Name'] = complete_ts['Date'].dt.strftime('%B')
+    
+    print(f"✅ Complete time series created: {len(complete_ts)} data points")
+    return complete_ts
+
+# Run this cell to display the complete time series
+if 'ts' in globals() and 'forecast_df' in globals() and ts is not None and forecast_df is not None:
+    print("📊 COMPLETE STUDENT ENROLLMENT TIME SERIES (2021-2025)")
+    print("="*70)
+    
+    complete_timeseries = create_complete_timeseries(ts, forecast_df)
+    
+    # Display historical data sample
+    print("\n📈 HISTORICAL DATA (2021-2024) - First 15 points:")
+    historical_sample = complete_timeseries[complete_timeseries['Type'] == 'Historical'].head(15)
+    print(historical_sample[['Date', 'Student_Counts', 'Year', 'Month_Name']].to_string(index=False))
+    
+    print("\n🔮 FORECASTED DATA (2025) - All 12 points:")
+    forecast_sample = complete_timeseries[complete_timeseries['Type'] == 'Forecasted']
+    print(forecast_sample[['Date', 'Student_Counts', 'Lower_CI', 'Upper_CI', 'Month_Name']].to_string(index=False))
+    
+    # Summary by year
+    print(f"\n📊 SUMMARY BY YEAR:")
+    yearly_summary = complete_timeseries.groupby(['Year', 'Type']).agg({
+        'Student_Counts': ['count', 'sum', 'mean', 'min', 'max']
+    }).round(0)
+    
+    for year in sorted(complete_timeseries['Year'].unique()):
+        year_data = complete_timeseries[complete_timeseries['Year'] == year]
+        data_type = year_data['Type'].iloc[0]
+        total_students = year_data['Student_Counts'].sum()
+        avg_monthly = year_data['Student_Counts'].mean()
+        min_month = year_data['Student_Counts'].min()
+        max_month = year_data['Student_Counts'].max()
+        
+        print(f"   {year} ({data_type:>10}): Total={total_students:>8,.0f}, Avg={avg_monthly:>6,.0f}, Min={min_month:>6,.0f}, Max={max_month:>6,.0f}")
+    
+    print(f"\n💾 Complete timeseries saved as 'complete_timeseries' variable ({len(complete_timeseries)} rows)")
+    
+else:
+    print("❌ No time series data available. Run Cell 1 first.")
+
+# =========================================================================
+# CELL 4: DATA EXPLORATION VISUALS (Limit: 2 plots)
+# =========================================================================
+
+def create_data_exploration_plots(ts, df):
+    """Create data exploration plots - limited to 2 plots"""
+    print("📊 Creating Data Exploration Visuals...")
+    
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Plot 1: Time series
+    axes[0].plot(ts.index, ts.values, marker='o', linewidth=2, markersize=4)
+    axes[0].set_title('Student Enrollment Over Time (2021-2024)', fontweight='bold')
+    axes[0].set_ylabel('Student Count')
+    axes[0].grid(True, alpha=0.3)
+    axes[0].tick_params(axis='x', rotation=45)
+    
+    # Plot 2: Monthly patterns
+    monthly_avg = df.groupby(df['Date'].dt.month)['Student_Counts'].mean()
+    month_names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+    
+    axes[1].bar(range(1, 13), monthly_avg.values, color='skyblue', edgecolor='navy')
+    axes[1].set_title('Average Monthly Enrollment Pattern', fontweight='bold')
+    axes[1].set_ylabel('Average Student Count')
+    axes[1].set_xticks(range(1, 13))
+    axes[1].set_xticklabels(month_names)
+    axes[1].grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    print("✅ Data exploration plots displayed!")
+
+# Run this cell for data exploration visuals
+if 'ts' in globals() and 'df' in globals() and ts is not None and df is not None:
+    create_data_exploration_plots(ts, df)
+else:
+    print("❌ No data available for plotting. Run Cell 1 first.")
+
+# =========================================================================
+# CELL 5: TIME SERIES FORECAST VISUAL (Limit: 1 plot)
+# =========================================================================
+
+def create_forecast_plot(ts, forecast_df):
+    """Create forecast visualization - single plot"""
+    print("🔮 Creating Forecast Visualization...")
+    
+    plt.figure(figsize=(16, 8))
+    
+    # Historical data
+    plt.plot(ts.index, ts.values, label='Historical Data (2021-2024)', 
+             linewidth=2, marker='o', markersize=4, color='blue')
+    
+    # Forecast data
+    plt.plot(forecast_df['Date'], forecast_df['Forecast'], 
+             label='2025 Forecast', linewidth=3, marker='s', 
+             markersize=8, color='red')
+    
+    # Confidence intervals
+    plt.fill_between(forecast_df['Date'], 
+                    forecast_df['Lower_CI'], 
+                    forecast_df['Upper_CI'],
+                    alpha=0.3, color='red', label='95% Confidence Interval')
+    
+    # Add vertical line at forecast boundary
+    boundary_date = forecast_df['Date'].iloc[0]
+    plt.axvline(x=boundary_date, color='gray', linestyle='--', 
+               alpha=0.7, label='Forecast Boundary')
+    
+    plt.title('Student Enrollment: Historical Data + 2025 Forecast', 
+              fontsize=14, fontweight='bold')
+    plt.xlabel('Date')
+    plt.ylabel('Student Count')
+    plt.legend(loc='upper left')
+    plt.grid(True, alpha=0.3)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+    
+    print("✅ Forecast visualization displayed!")
+
+# Run this cell for forecast visualization
+if 'ts' in globals() and 'forecast_df' in globals() and ts is not None and forecast_df is not None:
+    create_forecast_plot(ts, forecast_df)
+else:
+    print("❌ No forecast data available for plotting. Run Cell 1 first.")
+
+# =========================================================================
+# CELL 6: SEASONAL ANALYSIS VISUAL (Limit: 1 plot)
+# =========================================================================
+
+def create_seasonal_analysis_plot(complete_timeseries):
+    """Create seasonal analysis - single plot"""
+    print("🌊 Creating Seasonal Analysis...")
+    
+    plt.figure(figsize=(14, 8))
+    
+    # Year-over-year comparison
+    pivot_data = complete_timeseries.pivot_table(
+        index='Month', columns='Year', 
+        values='Student_Counts', aggfunc='mean'
+    )
+    
+    colors = ['blue', 'green', 'orange', 'purple', 'red']
+    
+    for i, year in enumerate(pivot_data.columns):
+        line_style = '-' if year <= 2024 else '--'
+        line_width = 2 if year <= 2024 else 4
+        alpha = 0.8 if year <= 2024 else 1.0
+        
+        plt.plot(pivot_data.index, pivot_data[year], 
+                marker='o', label=f'{year}', 
+                color=colors[i % len(colors)],
+                linestyle=line_style, linewidth=line_width, 
+                markersize=6, alpha=alpha)
+    
+    plt.title('Year-over-Year Monthly Enrollment Comparison (2021-2025)', 
+              fontsize=14, fontweight='bold')
+    plt.xlabel('Month')
+    plt.ylabel('Student Count')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.xticks(range(1, 13), 
+               ['Jan','Feb','Mar','Apr','May','Jun',
+                'Jul','Aug','Sep','Oct','Nov','Dec'])
+    
+    # Add annotation for 2025 forecast
+    plt.text(3, max(pivot_data.iloc[2]) * 0.8, 
+             '2025 = FORECAST\n(Dashed Line)', 
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
+             fontsize=10, fontweight='bold', ha='center')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    print("✅ Seasonal analysis displayed!")
+
+# Run this cell for seasonal analysis
+if 'complete_timeseries' in globals() and complete_timeseries is not None:
+    create_seasonal_analysis_plot(complete_timeseries)
+else:
+    print("❌ No complete timeseries available. Run Cell 3 first.")
+
+print("\n🎉 ALL ANALYSIS CELLS READY!")
+print("📋 Run cells in order:")
+print("   Cell 1: Core SARIMA Analysis")
+print("   Cell 2: Prediction Table") 
+print("   Cell 3: Complete Time Series Data")
+print("   Cell 4: Data Exploration Plots")
+print("   Cell 5: Forecast Visualization")
+print("   Cell 6: Seasonal Analysis Plot")
