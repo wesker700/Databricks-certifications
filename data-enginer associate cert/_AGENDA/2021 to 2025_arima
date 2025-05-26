@@ -141,26 +141,75 @@ def sarima_forecast(ts_historical):
 # -------------------------------
 # CELL 4: VISUALIZATION
 # -------------------------------
-def create_plan_vs_actual_visualization(forecast_df, ts_historical, sarima_pred=None, sarima_ci=None):
-    months_2025 = pd.to_datetime([f'2025-{m:02d}-01' for m in forecast_df['Month_Num']])
-    plt.figure(figsize=(14,7))
-    plt.plot(ts_historical.index, ts_historical.values, marker='o', label='Historical Actual', color='blue')
-    plt.plot(months_2025, forecast_df['Planned'], marker='s', label='2025 Planned', color='green', linestyle='--')
-    plt.plot(months_2025, forecast_df['Forecasted_Actual'], marker='^', label='2025 Forecasted Actual', color='red')
-    plt.fill_between(months_2025, forecast_df['Lower_CI'], forecast_df['Upper_CI'], color='gray', alpha=0.2, label='95% CI')
-    if sarima_pred is not None and sarima_ci is not None:
-        plt.plot(months_2025, sarima_pred.values, label='SARIMA Forecast', color='purple', linestyle=':')
-        plt.fill_between(months_2025, sarima_ci.iloc[:,0], sarima_ci.iloc[:,1], color='purple', alpha=0.15, label='95% CI (SARIMA)')
-    for i, row in forecast_df.iterrows():
+def create_plan_vs_actual_visualization(forecast_df, ts_historical):
+    """Enhanced visualization: timeseries with sorted months and annotated years/months."""
+    # ---- Ensure January–December order for 2025 ----
+    sorted_df = forecast_df.sort_values('Month_Num').reset_index(drop=True)
+    months_2025 = pd.to_datetime([f'2025-{m:02d}-01' for m in sorted_df['Month_Num']])
+
+    fig, ax = plt.subplots(figsize=(16, 7))
+    
+    # --- Plot 1: Historical Actuals (2021–2024) ---
+    ax.plot(ts_historical.index, ts_historical.values, marker='o', label='Historical Actual (2021–2024)', color='blue')
+
+    # --- Annotate year changes for historical data ---
+    years = sorted(ts_historical.index.year.unique())
+    for year in years:
+        idx = ts_historical.index[ts_historical.index.year == year][0]
+        ax.axvline(x=idx, color='gray', linestyle=':', linewidth=1, alpha=0.2)
+        ax.text(idx, ax.get_ylim()[0], str(year), color='blue', fontsize=11, ha='left', va='bottom', alpha=0.85)
+
+    # --- Plot 2: 2025 Plan and Forecast ---
+    ax.plot(months_2025, sorted_df['Planned'], marker='s', label='2025 Planned', color='green', linestyle='--')
+    ax.plot(months_2025, sorted_df['Forecasted_Actual'], marker='^', label='2025 Forecasted Actual', color='red')
+
+    # --- Plot 3: Confidence Intervals for 2025 Forecast ---
+    ax.fill_between(months_2025, sorted_df['Lower_CI'], sorted_df['Upper_CI'],
+                    color='gray', alpha=0.2, label='2025 95% CI')
+
+    # --- Highlight anomalies in 2025 forecast ---
+    for i, row in sorted_df.iterrows():
         if row['Anomaly_Flag']:
-            plt.scatter(months_2025[i], row['Forecasted_Actual'], color='black', s=80, edgecolors='yellow', zorder=10, label='Anomaly' if i == 0 else None)
-    plt.title('Plan vs Forecasted Actuals for 2025 (with Confidence Intervals)')
-    plt.legend()
-    plt.xticks(months_2025, forecast_df['Month'], rotation=45)
-    plt.ylabel('Student Count')
-    plt.grid(True, alpha=0.3)
+            ax.scatter(months_2025[i], row['Forecasted_Actual'], color='black', s=110, edgecolors='yellow', linewidths=2, zorder=10, label='Anomaly' if i == 0 else "")
+
+    # --- X-axis: historical years and 2025 months ---
+    ax.set_xlim([ts_historical.index.min(), months_2025[-1]])
+
+    # Major ticks: Years for historical, months for 2025
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    # Minor ticks: months
+    ax.xaxis.set_minor_locator(mdates.MonthLocator())
+    ax.xaxis.set_minor_formatter(mdates.DateFormatter('%b'))
+
+    # Add 2025 month labels under the 2025 plan/forecast points
+    month_labels = [m[:3] for m in sorted_df['Month']]
+    xtick_positions = list(months_2025)
+    # Combine existing ticks and 2025 months for display
+    all_xticks = list(ax.get_xticks()) + xtick_positions
+    all_xticklabels = [str(int(x)) if isinstance(x, float) and not np.isnan(x) else "" for x in ax.get_xticks()] + month_labels
+    ax.set_xticks(all_xticks)
+    ax.set_xticklabels(all_xticklabels, rotation=45, ha='right')
+
+    # Titles and labels
+    ax.set_title('Student Enrolment: 2021–2024 Actuals, 2025 Plan, and Forecasted Actuals', fontweight='bold')
+    ax.set_ylabel('Student Count')
+    ax.set_xlabel('Date')
+    ax.grid(True, alpha=0.3)
+    handles, labels = ax.get_legend_handles_labels()
+    # Remove duplicate 'Anomaly' labels
+    seen = set()
+    new_handles = []
+    new_labels = []
+    for h, l in zip(handles, labels):
+        if l not in seen:
+            new_handles.append(h)
+            new_labels.append(l)
+            seen.add(l)
+    ax.legend(new_handles, new_labels)
     plt.tight_layout()
     plt.show()
+    print("Plan vs Actual visualization created!")
 
 # -------------------------------
 # CELL 5: ACCURACY (OPTIONAL, when actuals are known)
