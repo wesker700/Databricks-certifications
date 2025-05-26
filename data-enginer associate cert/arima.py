@@ -1,4 +1,3 @@
-
 # =========================================================================
 # CORE SARIMA STUDENT ENROLLMENT FORECASTING FOR DATABRICKS
 # (Data loading handled separately by user)
@@ -413,12 +412,9 @@ else:
 if not missing_columns:
     forecast_results, model = run_complete_analysis(base_data)
     
-    # Save results back to ADLS2 (optional)
+    # Show results (CSV export removed)
     if forecast_results is not None:
-        # Save as pandas CSV
-        output_path = "abfs://folder2@printxpp.dfs.core.windows.net/scratch/opts/student_enrollment_forecast_2025.csv"
-        forecast_results.to_csv(output_path, index=False)
-        print(f"💾 Results saved to: {output_path}")
+        print("✅ Analysis completed successfully!")
         
         # Show key results for your academic calendar pattern
         print("\n🎯 KEY RESULTS FOR YOUR ENROLLMENT PATTERN:")
@@ -432,6 +428,10 @@ if not missing_columns:
         print(f"📅 February 2025: {feb_forecast:>8.0f} students")
         print(f"📅 March 2025:    {mar_forecast:>8.0f} students")
         print(f"📈 Feb→Mar surge: {((mar_forecast - feb_forecast) / feb_forecast * 100):>7.0f}%")
+        
+        # Show forecast results DataFrame
+        print(f"\n📊 Complete 2025 Forecast Results:")
+        print(forecast_results)
         
 else:
     print("❌ Cannot run analysis - please check column names")
