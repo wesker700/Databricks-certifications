@@ -90,20 +90,40 @@ plot_plan_forecast_timeseries_full(actual_2025_forecast, ts_historical)
 import matplotlib.pyplot as plt
 import pandas as pd
 
-def plot_forecast_with_ci(forecast_df):
+def forecast_visuals_with_ci(forecast_df):
+    # Sort by Month_Num to ensure Jan–Dec order
     sorted_df = forecast_df.sort_values('Month_Num').reset_index(drop=True)
     months_2025 = pd.to_datetime([f'2025-{m:02d}-01' for m in sorted_df['Month_Num']])
-    
-    plt.figure(figsize=(10,5))
+    month_labels = [m[:3] for m in sorted_df['Month']]
+
+    # --- 1. LINE CHART WITH FORECAST RIBBON ---
+    plt.figure(figsize=(11,5))
     plt.plot(months_2025, sorted_df['Forecasted_Actual'], marker='o', color='red', label='Forecasted Actual')
     plt.fill_between(months_2025, sorted_df['Lower_CI'], sorted_df['Upper_CI'], color='gray', alpha=0.3, label='95% Confidence Interval')
-    
     plt.title('2025 Student Enrolment Forecast with Confidence Interval')
     plt.xlabel('Month')
     plt.ylabel('Student Count')
-    plt.xticks(months_2025, sorted_df['Month'], rotation=45)
+    plt.xticks(months_2025, month_labels, rotation=45)
     plt.legend()
     plt.grid(True, alpha=0.2)
     plt.tight_layout()
     plt.show()
+
+    # --- 2. BAR CHART WITH ERROR BARS ---
+    forecast = sorted_df['Forecasted_Actual']
+    yerr = [
+        forecast - sorted_df['Lower_CI'],  # lower error
+        sorted_df['Upper_CI'] - forecast   # upper error
+    ]
+    plt.figure(figsize=(11,5))
+    plt.bar(month_labels, forecast, yerr=yerr, capsize=5, color='red', alpha=0.7)
+    plt.title('2025 Forecast with 95% Confidence Error Bars')
+    plt.xlabel('Month')
+    plt.ylabel('Student Count')
+    plt.grid(True, axis='y', alpha=0.2)
+    plt.tight_layout()
+    plt.show()
+
+# Example usage:
+forecast_visuals_with_ci(actual_2025_forecast)
 
