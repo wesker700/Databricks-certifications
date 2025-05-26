@@ -246,39 +246,88 @@ def create_detailed_prediction_table(forecast_df):
     
     return display_table
 
-# Run this cell to display the prediction table
+# Debug: Check what variables exist
+print("🔍 DEBUG: Checking available variables...")
+available_vars = [var for var in globals() if not var.startswith('_')]
+print(f"Available variables: {available_vars}")
+
+# Multiple ways to check for forecast_df
+forecast_available = False
+forecast_data = None
+
 if 'forecast_df' in globals() and forecast_df is not None:
-    print("📋 2025 STUDENT ENROLLMENT PREDICTIONS WITH CONFIDENCE ANALYSIS")
+    print("✅ Found forecast_df")
+    forecast_available = True
+    forecast_data = forecast_df
+elif 'forecast_results' in globals() and forecast_results is not None:
+    print("✅ Found forecast_results (using as forecast_df)")
+    forecast_available = True
+    forecast_data = forecast_results
+else:
+    print("❌ No forecast data found")
+    print("Available variables with 'forecast' in name:")
+    forecast_vars = [var for var in globals() if 'forecast' in var.lower()]
+    print(forecast_vars)
+
+# Run prediction table analysis
+if forecast_available and forecast_data is not None:
+    print("\n📋 2025 STUDENT ENROLLMENT PREDICTIONS WITH CONFIDENCE ANALYSIS")
     print("="*80)
     
-    detailed_table = create_detailed_prediction_table(forecast_df)
-    print(detailed_table.to_string(index=False))
-    
-    # Summary statistics
-    high_confidence = len(detailed_table[detailed_table['Confidence_Rating'].isin(['Very High', 'High'])])
-    medium_confidence = len(detailed_table[detailed_table['Confidence_Rating'] == 'Medium'])
-    low_confidence = len(detailed_table[detailed_table['Confidence_Rating'].isin(['Low', 'Very Low'])])
-    
-    print(f"\n📊 CONFIDENCE SUMMARY:")
-    print(f"   High confidence months: {high_confidence}/12")
-    print(f"   Medium confidence months: {medium_confidence}/12") 
-    print(f"   Low confidence months: {low_confidence}/12")
-    print(f"   Average uncertainty: ±{detailed_table['Uncertainty_Percent'].mean():.1f}%")
-    
-    # Seasonal insights
-    march_pred = detailed_table[detailed_table['Month'] == 'March']['Predicted_Students'].iloc[0]
-    jan_pred = detailed_table[detailed_table['Month'] == 'January']['Predicted_Students'].iloc[0]
-    
-    print(f"\n🌊 SEASONAL SURGE ANALYSIS:")
-    print(f"   January enrollment: {jan_pred:,} students")
-    print(f"   March enrollment: {march_pred:,} students") 
-    print(f"   Seasonal increase: {((march_pred - jan_pred) / jan_pred * 100):.0f}%")
-    
+    try:
+        detailed_table = create_detailed_prediction_table(forecast_data)
+        print(detailed_table.to_string(index=False))
+        
+        # Summary statistics
+        high_confidence = len(detailed_table[detailed_table['Confidence_Rating'].isin(['Very High', 'High'])])
+        medium_confidence = len(detailed_table[detailed_table['Confidence_Rating'] == 'Medium'])
+        low_confidence = len(detailed_table[detailed_table['Confidence_Rating'].isin(['Low', 'Very Low'])])
+        
+        print(f"\n📊 CONFIDENCE SUMMARY:")
+        print(f"   High confidence months: {high_confidence}/12")
+        print(f"   Medium confidence months: {medium_confidence}/12") 
+        print(f"   Low confidence months: {low_confidence}/12")
+        print(f"   Average uncertainty: ±{detailed_table['Uncertainty_Percent'].mean():.1f}%")
+        
+        # Seasonal insights
+        march_pred = detailed_table[detailed_table['Month'] == 'March']['Predicted_Students'].iloc[0]
+        jan_pred = detailed_table[detailed_table['Month'] == 'January']['Predicted_Students'].iloc[0]
+        
+        print(f"\n🌊 SEASONAL SURGE ANALYSIS:")
+        print(f"   January enrollment: {jan_pred:,} students")
+        print(f"   March enrollment: {march_pred:,} students") 
+        print(f"   Seasonal increase: {((march_pred - jan_pred) / jan_pred * 100):.0f}%")
+        
+        # Store for other cells
+        prediction_table_final = detailed_table
+        print(f"\n✅ Prediction table created successfully!")
+        
+    except Exception as e:
+        print(f"❌ Error creating detailed table: {e}")
+        # Fallback: Simple table
+        print("\n📋 BASIC 2025 ENROLLMENT PREDICTIONS:")
+        print("="*50)
+        simple_table = pd.DataFrame({
+            'Month': forecast_data['Month'],
+            'Predicted_Students': forecast_data['Forecast'].round(0).astype(int),
+            'Lower_Bound': forecast_data['Lower_CI'].round(0).astype(int),
+            'Upper_Bound': forecast_data['Upper_CI'].round(0).astype(int)
+        })
+        print(simple_table.to_string(index=False))
+        prediction_table_final = simple_table
+        
 else:
-    print("❌ No forecast data available. Run Cell 1 first.")
+    print("❌ CELL 2 ERROR: No forecast data available.")
+    print("🔧 TROUBLESHOOTING:")
+    print("   1. Make sure Cell 1 ran successfully")
+    print("   2. Check that 'forecast_df' variable exists")
+    print("   3. Try running Cell 1 again")
+    
+    # Show what variables we do have
+    print(f"\n📋 Available variables: {list(globals().keys())}")
 
 # =========================================================================
-# CELL 3: COMPLETE TIME SERIES DATA (2021-2025)
+# CELL 3: COMPLETE TIME SERIES DATA (2021-2025)  
 # =========================================================================
 
 def create_complete_timeseries(ts, forecast_df):
@@ -315,30 +364,112 @@ def create_complete_timeseries(ts, forecast_df):
     print(f"✅ Complete time series created: {len(complete_ts)} data points")
     return complete_ts
 
-# Run this cell to display the complete time series
-if 'ts' in globals() and 'forecast_df' in globals() and ts is not None and forecast_df is not None:
-    print("📊 COMPLETE STUDENT ENROLLMENT TIME SERIES (2021-2025)")
-    print("="*70)
+def create_fallback_timeseries(base_data, forecast_data):
+    """Create fallback timeseries if main function fails"""
+    print("📈 Creating Fallback Time Series...")
     
-    complete_timeseries = create_complete_timeseries(ts, forecast_df)
+    try:
+        # Historical data from base_data
+        month_mapping = {
+            'January': 1, 'Jan': 1, 'February': 2, 'Feb': 2,
+            'March': 3, 'Mar': 3, 'April': 4, 'Apr': 4,
+            'May': 5, 'June': 6, 'Jun': 6,
+            'July': 7, 'Jul': 7, 'August': 8, 'Aug': 8,
+            'September': 9, 'Sep': 9, 'October': 10, 'Oct': 10,
+            'November': 11, 'Nov': 11, 'December': 12, 'Dec': 12
+        }
+        
+        base_copy = base_data.copy()
+        if base_copy['Reporting_Month'].dtype == 'object':
+            base_copy['Month_Num'] = base_copy['Reporting_Month'].map(month_mapping)
+        else:
+            base_copy['Month_Num'] = base_copy['Reporting_Month']
+            
+        base_copy['Date'] = pd.to_datetime({
+            'year': base_copy['Reporting_Year'],
+            'month': base_copy['Month_Num'],
+            'day': 1
+        })
+        
+        historical_df = pd.DataFrame({
+            'Date': base_copy['Date'],
+            'Student_Counts': base_copy['Student_Counts'],
+            'Type': 'Historical',
+            'Year': base_copy['Reporting_Year'],
+            'Month': base_copy['Month_Num'],
+            'Month_Name': base_copy['Date'].dt.strftime('%B')
+        })
+        
+        # Forecast data
+        forecast_df = pd.DataFrame({
+            'Date': forecast_data['Date'],
+            'Student_Counts': forecast_data['Forecast'],
+            'Type': 'Forecasted',
+            'Year': forecast_data['Date'].dt.year,
+            'Month': forecast_data['Date'].dt.month,
+            'Month_Name': forecast_data['Date'].dt.strftime('%B')
+        })
+        
+        # Combine
+        complete_ts = pd.concat([historical_df, forecast_df], ignore_index=True)
+        complete_ts = complete_ts.sort_values('Date').reset_index(drop=True)
+        
+        print(f"✅ Fallback time series created: {len(complete_ts)} data points")
+        return complete_ts
+        
+    except Exception as e:
+        print(f"❌ Fallback also failed: {e}")
+        return None
+
+# Debug: Check what variables exist for timeseries
+print("\n🔍 DEBUG: Checking timeseries variables...")
+ts_available = False
+timeseries_data = None
+
+# Check for time series data
+if 'ts' in globals() and ts is not None and 'forecast_df' in globals() and forecast_df is not None:
+    print("✅ Found ts and forecast_df")
+    ts_available = True
+    try:
+        timeseries_data = create_complete_timeseries(ts, forecast_df)
+    except Exception as e:
+        print(f"⚠️ Main timeseries creation failed: {e}")
+        ts_available = False
+        
+elif 'base_data' in globals() and base_data is not None and 'forecast_df' in globals() and forecast_df is not None:
+    print("✅ Found base_data and forecast_df - using fallback")
+    try:
+        timeseries_data = create_fallback_timeseries(base_data, forecast_df)
+        ts_available = True if timeseries_data is not None else False
+    except Exception as e:
+        print(f"⚠️ Fallback timeseries creation failed: {e}")
+        ts_available = False
+else:
+    print("❌ Required variables not found")
+    print("Looking for: ts, forecast_df, base_data")
+
+# Display timeseries if available
+if ts_available and timeseries_data is not None:
+    print("\n📊 COMPLETE STUDENT ENROLLMENT TIME SERIES (2021-2025)")
+    print("="*70)
     
     # Display historical data sample
     print("\n📈 HISTORICAL DATA (2021-2024) - First 15 points:")
-    historical_sample = complete_timeseries[complete_timeseries['Type'] == 'Historical'].head(15)
+    historical_sample = timeseries_data[timeseries_data['Type'] == 'Historical'].head(15)
     print(historical_sample[['Date', 'Student_Counts', 'Year', 'Month_Name']].to_string(index=False))
     
     print("\n🔮 FORECASTED DATA (2025) - All 12 points:")
-    forecast_sample = complete_timeseries[complete_timeseries['Type'] == 'Forecasted']
-    print(forecast_sample[['Date', 'Student_Counts', 'Lower_CI', 'Upper_CI', 'Month_Name']].to_string(index=False))
+    forecast_sample = timeseries_data[timeseries_data['Type'] == 'Forecasted']
+    if len(forecast_sample) > 0:
+        display_cols = ['Date', 'Student_Counts', 'Month_Name']
+        if 'Lower_CI' in timeseries_data.columns:
+            display_cols.extend(['Lower_CI', 'Upper_CI'])
+        print(forecast_sample[display_cols].to_string(index=False))
     
     # Summary by year
     print(f"\n📊 SUMMARY BY YEAR:")
-    yearly_summary = complete_timeseries.groupby(['Year', 'Type']).agg({
-        'Student_Counts': ['count', 'sum', 'mean', 'min', 'max']
-    }).round(0)
-    
-    for year in sorted(complete_timeseries['Year'].unique()):
-        year_data = complete_timeseries[complete_timeseries['Year'] == year]
+    for year in sorted(timeseries_data['Year'].unique()):
+        year_data = timeseries_data[timeseries_data['Year'] == year]
         data_type = year_data['Type'].iloc[0]
         total_students = year_data['Student_Counts'].sum()
         avg_monthly = year_data['Student_Counts'].mean()
@@ -347,10 +478,28 @@ if 'ts' in globals() and 'forecast_df' in globals() and ts is not None and forec
         
         print(f"   {year} ({data_type:>10}): Total={total_students:>8,.0f}, Avg={avg_monthly:>6,.0f}, Min={min_month:>6,.0f}, Max={max_month:>6,.0f}")
     
-    print(f"\n💾 Complete timeseries saved as 'complete_timeseries' variable ({len(complete_timeseries)} rows)")
+    print(f"\n💾 Complete timeseries saved as 'complete_timeseries' variable ({len(timeseries_data)} rows)")
+    
+    # Store for use in other cells
+    complete_timeseries = timeseries_data
     
 else:
-    print("❌ No time series data available. Run Cell 1 first.")
+    print("\n❌ CELL 3 ERROR: Could not create timeseries data.")
+    print("🔧 TROUBLESHOOTING:")
+    print("   1. Make sure Cell 1 ran successfully")
+    print("   2. Check that variables 'ts' and 'forecast_df' exist")
+    print("   3. Try running Cell 1 again")
+    
+    # Show available variables
+    print(f"\n📋 Available variables: {[var for var in globals() if not var.startswith('_')]}")
+    
+    # Try to show just the forecast data as backup
+    if 'forecast_df' in globals() and forecast_df is not None:
+        print("\n📊 SHOWING FORECAST DATA ONLY:")
+        print(forecast_df[['Date', 'Month', 'Forecast', 'Lower_CI', 'Upper_CI']].to_string(index=False))
+    elif 'forecast_data' in globals() and forecast_data is not None:
+        print("\n📊 SHOWING FORECAST DATA ONLY:")
+        print(forecast_data[['Date', 'Month', 'Forecast', 'Lower_CI', 'Upper_CI']].to_string(index=False))
 
 # =========================================================================
 # CELL 4: DATA EXPLORATION VISUALS (Limit: 2 plots)
