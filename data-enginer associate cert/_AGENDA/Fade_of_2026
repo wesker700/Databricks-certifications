@@ -1,0 +1,37 @@
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+
+def plot_forecast_fade_2026(df_2025, df_2026):
+    # Assumes both are sorted by Month_Num
+    months_2025 = pd.to_datetime([f'2025-{m:02d}-01' for m in df_2025['Month_Num']])
+    months_2026 = pd.to_datetime([f'2026-{m:02d}-01' for m in df_2026['Month_Num']])
+
+    # --- Plot 2025 (solid lines and ribbon) ---
+    plt.figure(figsize=(13,6))
+    plt.plot(months_2025, df_2025['Forecasted_Actual'], marker='o', color='red', label='2025 Forecast')
+    plt.fill_between(months_2025, df_2025['Lower_CI'], df_2025['Upper_CI'], color='gray', alpha=0.3, label='2025 95% CI')
+
+    # --- Plot 2026 (fade: lighter color, wider CI, dashed line) ---
+    plt.plot(months_2026, df_2026['Forecasted_Actual'], marker='o', color='orange', linestyle='--', label='2026 Forecast')
+    plt.fill_between(months_2026, df_2026['Lower_CI'], df_2026['Upper_CI'], color='orange', alpha=0.15, label='2026 95% CI (Lower Confidence)')
+
+    # --- Highlight 2025/2026 boundary ---
+    plt.axvline(months_2026[0], color='purple', linestyle='--', linewidth=2, alpha=0.7)
+    plt.text(months_2026[0], plt.ylim()[0], "2026", color='purple', fontsize=12, ha='left', va='bottom', alpha=0.9, fontweight='bold')
+
+    # --- Month labels
+    all_months = list(months_2025) + list(months_2026)
+    month_labels = [f"{d.year}-{d.month:02d}" for d in all_months]
+    plt.xticks(all_months, month_labels, rotation=45)
+
+    plt.title('Forecast “Fade”: 2025 to 2026 with Growing Uncertainty')
+    plt.xlabel('Month')
+    plt.ylabel('Student Count')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+# Example: 
+# plot_forecast_fade_2026(actual_2025_forecast, forecast_2026_halfyear)
