@@ -1,0 +1,50 @@
+import pandas as pd
+
+def display_forecast_table(forecast_df):
+    display_cols = [
+        'Month', 'Planned', 'Forecasted_Actual', 'Lower_CI', 'Upper_CI',
+        'Variance_from_Plan', 'Variance_Pct', 'Confidence', 'Anomaly_Flag'
+    ]
+    # Optionally, round values for readability
+    table_df = forecast_df[display_cols].copy()
+    table_df['Variance_Pct'] = table_df['Variance_Pct'].round(1)
+    table_df['Lower_CI'] = table_df['Lower_CI'].astype(int)
+    table_df['Upper_CI'] = table_df['Upper_CI'].astype(int)
+    table_df['Planned'] = table_df['Planned'].astype(int)
+    table_df['Forecasted_Actual'] = table_df['Forecasted_Actual'].astype(int)
+    table_df['Variance_from_Plan'] = table_df['Variance_from_Plan'].astype(int)
+    print(table_df.to_string(index=False))
+
+# Example usage:
+display_forecast_table(actual_2025_forecast)
+
+
+
+import matplotlib.pyplot as plt
+
+def plot_plan_forecast_timeseries(forecast_df, ts_historical):
+    months_2025 = pd.to_datetime([f'2025-{m:02d}-01' for m in forecast_df['Month_Num']])
+    plt.figure(figsize=(14, 6))
+    # Historical Actuals
+    plt.plot(ts_historical.index, ts_historical.values, marker='o', label='Historical Actual', color='blue')
+    # Planned 2025
+    plt.plot(months_2025, forecast_df['Planned'], marker='s', label='2025 Planned', color='green', linestyle='--')
+    # Forecasted Actuals 2025
+    plt.plot(months_2025, forecast_df['Forecasted_Actual'], marker='^', label='2025 Forecasted Actual', color='red')
+    # Confidence Intervals
+    plt.fill_between(months_2025, forecast_df['Lower_CI'], forecast_df['Upper_CI'],
+                     color='gray', alpha=0.2, label='95% CI')
+    # Anomalies
+    for i, row in forecast_df.iterrows():
+        if row['Anomaly_Flag']:
+            plt.scatter(months_2025[i], row['Forecasted_Actual'], color='black', s=90, edgecolors='yellow', linewidths=2, zorder=10, label='Anomaly' if i == 0 else "")
+    plt.title('Student Enrolment: Historical, 2025 Plan, and Forecasted Actuals')
+    plt.legend()
+    plt.xticks(months_2025, forecast_df['Month'], rotation=45)
+    plt.ylabel('Student Count')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+# Example usage:
+plot_plan_forecast_timeseries(actual_2025_forecast, ts_historical)
