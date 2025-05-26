@@ -1,1 +1,71 @@
 
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+
+def make_2026_halfyear_forecast_from_2025(actual_2025_forecast, widen_factor=1.5):
+    """
+    Extend the 2025 forecast into Jan-Jun 2026 by rolling forward the mean and volatility,
+    with wider confidence intervals to represent lower certainty.
+    """
+    # Use last 3 months of 2025 as base for 2026 trend, or mean of 2025
+    base_level = actual_2025_forecast['Forecasted_Actual'].mean()
+    base_cv = (actual_2025_forecast['Upper_CI'] - actual_2025_forecast['Lower_CI']).mean() / base_level / 2
+    
+    # We'll just trend the forecast flat for demonstration
+    months = ['January', 'February', 'March', 'April', 'May', 'June']
+    month_nums = list(range(1, 7))
+    forecasted_actuals = [int(base_level)] * 6
+    
+    # Make confidence intervals wider for 2026
+    volatility = base_cv * widen_factor
+    
+    lower_cis = [int(x - x * volatility * 1.96) for x in forecasted_actuals]
+    upper_cis = [int(x + x * volatility * 1.96) for x in forecasted_actuals]
+    
+    return pd.DataFrame({
+        'Month': months,
+        'Month_Num': month_nums,
+        'Forecasted_Actual': forecasted_actuals,
+        'Lower_CI': lower_cis,
+        'Upper_CI': upper_cis
+    })
+
+def plot_forecast_fade_2026(df_2025, df_2026):
+    # Sort and get date indices
+    df_2025 = df_2025.sort_values('Month_Num').reset_index(drop=True)
+    df_2026 = df_2026.sort_values('Month_Num').reset_index(drop=True)
+    months_2025 = pd.to_datetime([f'2025-{m:02d}-01' for m in df_2025['Month_Num']])
+    months_2026 = pd.to_datetime([f'2026-{m:02d}-01' for m in df_2026['Month_Num']])
+
+    plt.figure(figsize=(14,6))
+
+    # Plot 2025 (solid lines and ribbon)
+    plt.plot(months_2025, df_2025['Forecasted_Actual'], marker='o', color='red', label='2025 Forecast')
+    plt.fill_between(months_2025, df_2025['Lower_CI'], df_2025['Upper_CI'], color='gray', alpha=0.3, label='2025 95% CI')
+
+    # Plot 2026 (fade: lighter color, wider CI, dashed line)
+    plt.plot(months_2026, df_2026['Forecasted_Actual'], marker='o', color='orange', linestyle='--', label='2026 Forecast')
+    plt.fill_between(months_2026, df_2026['Lower_CI'], df_2026['Upper_CI'], color='orange', alpha=0.15, label='2026 95% CI (Lower Confidence)')
+
+    # Highlight 2025/2026 boundary
+    plt.axvline(months_2026[0], color='purple', linestyle='--', linewidth=2, alpha=0.7)
+    plt.text(months_2026[0], plt.ylim()[0], "2026", color='purple', fontsize=12, ha='left', va='bottom', alpha=0.9, fontweight='bold')
+
+    # Month labels
+    all_months = list(months_2025) + list(months_2026)
+    month_labels = [f"{d.year}-{d.month:02d}" for d in all_months]
+    plt.xticks(all_months, month_labels, rotation=45)
+
+    plt.title('Forecast “Fade”: 2025 to 2026 with Growing Uncertainty')
+    plt.xlabel('Month')
+    plt.ylabel('Student Count')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+# -------- Usage example ---------
+# Suppose you already have `actual_2025_forecast` from your forecasting process
+forecast_2026_halfyear = make_2026_halfyear_forecast_from_2025(actual_2025_forecast, widen_factor=1.7) # widen_factor increases 2026 CI
+plot_forecast_fade_2026(actual_2025_forecast, forecast_2026_halfyear)
