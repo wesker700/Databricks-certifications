@@ -347,7 +347,234 @@ def forecast_2025_enrollment(model, ts_original):
     
     return forecast_df
 
-def run_complete_analysis(base_data):
+def create_complete_timeseries_2021_2025(ts_original, forecast_df):
+    """Create complete time series from 2021 to 2025 (historical + forecasted)"""
+    print("\n📈 Creating Complete 2021-2025 Time Series...")
+    
+    # Historical data (2021-2024)
+    historical_df = pd.DataFrame({
+        'Date': ts_original.index,
+        'Student_Counts': ts_original.values,
+        'Type': 'Historical',
+        'Lower_CI': ts_original.values,  # Historical data has no uncertainty
+        'Upper_CI': ts_original.values
+    })
+    
+    # Forecasted data (2025)
+    forecast_clean = pd.DataFrame({
+        'Date': forecast_df['Date'],
+        'Student_Counts': forecast_df['Forecast'],
+        'Type': 'Forecasted',
+        'Lower_CI': forecast_df['Lower_CI'],
+        'Upper_CI': forecast_df['Upper_CI']
+    })
+    
+    # Combine historical and forecasted data
+    complete_ts = pd.concat([historical_df, forecast_clean], ignore_index=True)
+    complete_ts = complete_ts.sort_values('Date').reset_index(drop=True)
+    
+    # Add additional columns for analysis
+    complete_ts['Year'] = complete_ts['Date'].dt.year
+    complete_ts['Month'] = complete_ts['Date'].dt.month
+    complete_ts['Month_Name'] = complete_ts['Date'].dt.strftime('%B')
+    
+    print(f"✅ Complete time series created: {len(complete_ts)} data points")
+    print(f"📊 Historical data: {len(historical_df)} points (2021-2024)")
+    print(f"🔮 Forecasted data: {len(forecast_clean)} points (2025)")
+    
+    return complete_ts
+
+def create_prediction_table_with_confidence(forecast_df):
+    """Create a clean prediction table with confidence ratings"""
+    print("\n📋 Creating Prediction Table with Confidence Analysis...")
+    
+    # Calculate confidence metrics
+    prediction_table = forecast_df.copy()
+    
+    # Calculate confidence interval width
+    prediction_table['CI_Width'] = prediction_table['Upper_CI'] - prediction_table['Lower_CI']
+    
+    # Calculate relative confidence (smaller CI width = higher confidence)
+    prediction_table['Relative_CI_Width'] = (prediction_table['CI_Width'] / prediction_table['Forecast']) * 100
+    
+    # Assign confidence ratings based on relative CI width
+    def assign_confidence_rating(rel_width):
+        if rel_width <= 10:
+            return "Very High"
+        elif rel_width <= 20:
+            return "High" 
+        elif rel_width <= 35:
+            return "Medium"
+        elif rel_width <= 50:
+            return "Low"
+        else:
+            return "Very Low"
+    
+    prediction_table['Confidence_Rating'] = prediction_table['Relative_CI_Width'].apply(assign_confidence_rating)
+    
+    # Create clean display table
+    display_table = pd.DataFrame({
+        'Month': prediction_table['Month'],
+        'Predicted_Students': prediction_table['Forecast'].round(0).astype(int),
+        'Lower_Bound': prediction_table['Lower_CI'].round(0).astype(int),
+        'Upper_Bound': prediction_table['Upper_CI'].round(0).astype(int),
+        'Confidence_Rating': prediction_table['Confidence_Rating'],
+        'Uncertainty_Range': prediction_table['CI_Width'].round(0).astype(int),
+        'Uncertainty_Percent': prediction_table['Relative_CI_Width'].round(1)
+    })
+    
+    print("✅ Prediction table created with confidence analysis")
+    
+    return display_table, prediction_table
+
+def visualize_complete_timeline_2021_2025(complete_ts):
+    """Create comprehensive visualization of 2021-2025 timeline"""
+    print("\n📊 Creating 2021-2025 Timeline Visualization...")
+    
+    fig, axes = plt.subplots(3, 1, figsize=(16, 15))
+    
+    # Plot 1: Complete timeline with historical + forecasted data
+    historical_data = complete_ts[complete_ts['Type'] == 'Historical']
+    forecast_data = complete_ts[complete_ts['Type'] == 'Forecasted']
+    
+    axes[0].plot(historical_data['Date'], historical_data['Student_Counts'], 
+                 marker='o', linewidth=2, label='Historical Data (2021-2024)', color='blue')
+    
+    axes[0].plot(forecast_data['Date'], forecast_data['Student_Counts'], 
+                 marker='s', linewidth=3, label='Forecasted Data (2025)', color='red', markersize=8)
+    
+    # Add confidence intervals for 2025
+    axes[0].fill_between(forecast_data['Date'], 
+                        forecast_data['Lower_CI'], 
+                        forecast_data['Upper_CI'],
+                        alpha=0.3, color='red', label='95% Confidence Interval')
+    
+    axes[0].set_title('Complete Student Enrollment Timeline (2021-2025)', fontsize=14, fontweight='bold')
+    axes[0].set_ylabel('Student Count')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+    axes[0].tick_params(axis='x', rotation=45)
+    
+    # Add vertical line to separate historical from forecasted
+    transition_date = forecast_data['Date'].iloc[0]
+    axes[0].axvline(x=transition_date, color='gray', linestyle='--', alpha=0.7, 
+                   label='Historical/Forecast Boundary')
+    
+    # Plot 2: Year-over-year comparison (2021-2025)
+    pivot_complete = complete_ts.pivot_table(index='Month', columns='Year', 
+                                           values='Student_Counts', aggfunc='mean')
+    
+    colors = ['blue', 'green', 'orange', 'purple', 'red']
+    for i, year in enumerate(pivot_complete.columns):
+        line_style = '-' if year <= 2024 else '--'  # Solid for historical, dashed for forecast
+        line_width = 2 if year <= 2024 else 3
+        axes[1].plot(pivot_complete.index, pivot_complete[year], 
+                    marker='o', label=f'{year}', color=colors[i % len(colors)],
+                    linestyle=line_style, linewidth=line_width, markersize=6)
+    
+    axes[1].set_title('Year-over-Year Enrollment Comparison (2021-2025)', fontsize=12, fontweight='bold')
+    axes[1].set_xlabel('Month')
+    axes[1].set_ylabel('Student Count')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+    axes[1].set_xticks(range(1, 13))
+    axes[1].set_xticklabels(['Jan','Feb','Mar','Apr','May','Jun',
+                            'Jul','Aug','Sep','Oct','Nov','Dec'])
+    
+    # Plot 3: Focus on the dramatic seasonal pattern (all years)
+    march_data = complete_ts[complete_ts['Month'] == 3]
+    jan_feb_data = complete_ts[complete_ts['Month'].isin([1, 2])]
+    
+    # Bar chart showing March vs Jan-Feb average by year
+    years = sorted(complete_ts['Year'].unique())
+    march_values = []
+    jan_feb_avg = []
+    
+    for year in years:
+        march_val = complete_ts[(complete_ts['Year'] == year) & (complete_ts['Month'] == 3)]['Student_Counts'].iloc[0]
+        jan_feb_val = complete_ts[(complete_ts['Year'] == year) & (complete_ts['Month'].isin([1, 2]))]['Student_Counts'].mean()
+        march_values.append(march_val)
+        jan_feb_avg.append(jan_feb_val)
+    
+    x_pos = np.arange(len(years))
+    width = 0.35
+    
+    bars1 = axes[2].bar(x_pos - width/2, jan_feb_avg, width, label='Jan-Feb Average', 
+                       color='lightblue', edgecolor='navy')
+    bars2 = axes[2].bar(x_pos + width/2, march_values, width, label='March Enrollment', 
+                       color='red', alpha=0.7, edgecolor='darkred')
+    
+    # Add value labels on bars
+    for i, (jan_feb, march) in enumerate(zip(jan_feb_avg, march_values)):
+        axes[2].text(i - width/2, jan_feb + 500, f'{jan_feb:.0f}', ha='center', va='bottom', fontsize=8)
+        axes[2].text(i + width/2, march + 1000, f'{march:.0f}', ha='center', va='bottom', fontsize=8)
+    
+    axes[2].set_title('Seasonal Surge Analysis: Jan-Feb vs March (2021-2025)', fontsize=12, fontweight='bold')
+    axes[2].set_xlabel('Year')
+    axes[2].set_ylabel('Student Count')
+    axes[2].set_xticks(x_pos)
+    axes[2].set_xticklabels(years)
+    axes[2].legend()
+    axes[2].grid(True, alpha=0.3, axis='y')
+    
+    # Add forecast indicator for 2025
+    axes[2].text(len(years)-1, max(march_values) * 0.8, 'FORECAST', 
+                ha='center', va='center', bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
+                fontsize=10, fontweight='bold')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    print("✅ Complete timeline visualization created!")
+
+def display_summary_statistics(complete_ts, display_table):
+    """Display comprehensive summary statistics"""
+    print("\n📊 COMPREHENSIVE ENROLLMENT ANALYSIS SUMMARY")
+    print("="*70)
+    
+    # Historical vs Forecasted summary
+    historical_data = complete_ts[complete_ts['Type'] == 'Historical']
+    forecast_data = complete_ts[complete_ts['Type'] == 'Forecasted']
+    
+    print(f"\n🔍 HISTORICAL DATA SUMMARY (2021-2024):")
+    print(f"   Total observations: {len(historical_data)}")
+    print(f"   Average monthly enrollment: {historical_data['Student_Counts'].mean():,.0f}")
+    print(f"   Minimum enrollment: {historical_data['Student_Counts'].min():,.0f}")
+    print(f"   Maximum enrollment: {historical_data['Student_Counts'].max():,.0f}")
+    print(f"   Standard deviation: {historical_data['Student_Counts'].std():,.0f}")
+    
+    print(f"\n🔮 FORECASTED DATA SUMMARY (2025):")
+    print(f"   Predicted total annual enrollment: {forecast_data['Student_Counts'].sum():,.0f}")
+    print(f"   Average monthly enrollment: {forecast_data['Student_Counts'].mean():,.0f}")
+    print(f"   Predicted minimum month: {forecast_data['Student_Counts'].min():,.0f}")
+    print(f"   Predicted maximum month: {forecast_data['Student_Counts'].max():,.0f}")
+    
+    # Seasonal pattern analysis
+    historical_march = historical_data[historical_data['Month'] == 3]['Student_Counts'].mean()
+    forecast_march = forecast_data[forecast_data['Month'] == 3]['Student_Counts'].iloc[0]
+    
+    historical_jan_feb = historical_data[historical_data['Month'].isin([1, 2])]['Student_Counts'].mean()
+    forecast_jan_feb = forecast_data[forecast_data['Month'].isin([1, 2])]['Student_Counts'].mean()
+    
+    print(f"\n🌊 SEASONAL PATTERN ANALYSIS:")
+    print(f"   Historical March average: {historical_march:,.0f}")
+    print(f"   Forecasted March 2025: {forecast_march:,.0f}")
+    print(f"   Historical Jan-Feb average: {historical_jan_feb:,.0f}")
+    print(f"   Forecasted Jan-Feb 2025: {forecast_jan_feb:,.0f}")
+    print(f"   Historical seasonal surge: {((historical_march - historical_jan_feb) / historical_jan_feb * 100):.0f}%")
+    print(f"   Forecasted seasonal surge: {((forecast_march - forecast_jan_feb) / forecast_jan_feb * 100):.0f}%")
+    
+    # Confidence analysis
+    high_confidence = len(display_table[display_table['Confidence_Rating'].isin(['Very High', 'High'])])
+    medium_confidence = len(display_table[display_table['Confidence_Rating'] == 'Medium'])
+    low_confidence = len(display_table[display_table['Confidence_Rating'].isin(['Low', 'Very Low'])])
+    
+    print(f"\n🎯 FORECAST CONFIDENCE ANALYSIS:")
+    print(f"   High confidence predictions: {high_confidence}/12 months")
+    print(f"   Medium confidence predictions: {medium_confidence}/12 months")
+    print(f"   Low confidence predictions: {low_confidence}/12 months")
+    print(f"   Average uncertainty range: ±{display_table['Uncertainty_Range'].mean():,.0f} students")
+    print(f"   Average uncertainty percentage: ±{display_table['Uncertainty_Percent'].mean():.1f}%")
     """Run complete SARIMA analysis"""
     
     print("🚀 Starting Complete SARIMA Analysis for Student Enrollment")
@@ -410,11 +637,16 @@ else:
 
 # Run complete SARIMA analysis
 if not missing_columns:
-    forecast_results, model = run_complete_analysis(base_data)
+    forecast_results, model, complete_timeseries, prediction_table = run_complete_analysis(base_data)
     
-    # Show results (CSV export removed)
+    # Show results
     if forecast_results is not None:
         print("✅ Analysis completed successfully!")
+        
+        # Display the clean prediction table with confidence ratings
+        print("\n📋 2025 ENROLLMENT PREDICTIONS WITH CONFIDENCE ANALYSIS:")
+        print("="*80)
+        print(prediction_table.to_string(index=False))
         
         # Show key results for your academic calendar pattern
         print("\n🎯 KEY RESULTS FOR YOUR ENROLLMENT PATTERN:")
@@ -429,9 +661,20 @@ if not missing_columns:
         print(f"📅 March 2025:    {mar_forecast:>8.0f} students")
         print(f"📈 Feb→Mar surge: {((mar_forecast - feb_forecast) / feb_forecast * 100):>7.0f}%")
         
-        # Show forecast results DataFrame
-        print(f"\n📊 Complete 2025 Forecast Results:")
-        print(forecast_results)
+        # Show sample of complete time series data
+        print(f"\n📊 Sample of Complete 2021-2025 Time Series Data:")
+        print("="*60)
+        sample_data = complete_timeseries[['Date', 'Student_Counts', 'Type', 'Month_Name', 'Year']].head(10)
+        print(sample_data.to_string(index=False))
+        print("...")
+        sample_data_end = complete_timeseries[['Date', 'Student_Counts', 'Type', 'Month_Name', 'Year']].tail(5)
+        print(sample_data_end.to_string(index=False))
+        
+        print(f"\n💾 AVAILABLE DATA OBJECTS:")
+        print(f"   📈 complete_timeseries: Full 2021-2025 timeline ({len(complete_timeseries)} data points)")
+        print(f"   📋 prediction_table: Clean 2025 predictions with confidence ratings")
+        print(f"   🔮 forecast_results: Detailed 2025 forecasts with confidence intervals")
+        print(f"   🤖 model: Fitted SARIMA model for further analysis")
         
 else:
     print("❌ Cannot run analysis - please check column names")
