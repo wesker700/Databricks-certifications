@@ -68,3 +68,25 @@ def plot_forecast_fade_2026(df_2025, df_2026, ts_historical):
 
 # Usage
 plot_forecast_fade_2026(actual_2025_forecast, forecast_2026_halfyear, ts_historical)
+
+
+
+#table form
+
+def forecast_table_view(*dfs):
+    # Combine all DataFrames (for 2025, 2026, etc.)
+    table_df = pd.concat(dfs, ignore_index=True)
+    table_df = table_df.sort_values(['Year', 'Month_Num']).reset_index(drop=True)
+    # Confidence Rate = (Upper_CI - Lower_CI) / Forecasted_Actual * 100
+    table_df['Confidence_Rate_%'] = ((table_df['Upper_CI'] - table_df['Lower_CI']) / table_df['Forecasted_Actual'] * 100).round(1)
+    # Round for nice viewing
+    table_df['Forecasted_Actual'] = table_df['Forecasted_Actual'].round(0).astype(int)
+    table_df['Lower_CI'] = table_df['Lower_CI'].round(0).astype(int)
+    table_df['Upper_CI'] = table_df['Upper_CI'].round(0).astype(int)
+    # Display columns
+    display_cols = ['Year', 'Month', 'Forecasted_Actual', 'Lower_CI', 'Upper_CI', 'Confidence_Rate_%']
+    print(table_df[display_cols].to_string(index=False))
+
+# Example usage (with 2025 and H1 2026)
+forecast_table_view(actual_2025_forecast, forecast_2026_halfyear)
+
