@@ -1,0 +1,618 @@
+# =========================================================================
+# SINGLE FILE REAL-TIME 2025 FORECASTING
+# (All data 2021-2025 in one CSV file - No Emojis)
+# =========================================================================
+
+# CELL 1: LOAD AND ANALYZE COMPLETE DATASET
+# =========================================================================
+
+%pip install pmdarima
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
+
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.tsa.stattools import adfuller
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+try:
+    from pmdarima import auto_arima
+    AUTO_ARIMA_AVAILABLE = True
+    print("pmdarima imported successfully")
+except ImportError:
+    print("pmdarima not available")
+    AUTO_ARIMA_AVAILABLE = False
+
+%matplotlib inline
+
+def load_and_analyze_complete_dataset(file_path):
+    """Load complete dataset and separate historical vs actual 2025 data"""
+    print("LOADING COMPLETE DATASET (2021-2025)")
+    print("="*60)
+    
+    # Load complete data
+    complete_spark = spark.read.option("header","true").option("inferSchema","true").csv(file_path)
+    complete_data = complete_spark.toPandas()
+    
+    print(f"Complete dataset loaded: {complete_data.shape}")
+    print(f"Years in dataset: {sorted(complete_data['Reporting_Year'].unique())}")
+    
+    # Separate historical (2021-2024) and actual 2025 data
+    historical_data = complete_data[complete_data['Reporting_Year'] < 2025].copy()
+    actual_2025_data = complete_data[complete_data['Reporting_Year'] == 2025].copy()
+    
+    print(f"\nDATA BREAKDOWN:")
+    print(f"   Historical data (2021-2024): {len(historical_data)} observations")
+    print(f"   Actual 2025 data: {len(actual_2025_data)} observations")
+    
+    if len(actual_2025_data) > 0:
+        available_2025_months = sorted(actual_2025_data['Reporting_Month'].unique())
+        print(f"   2025 months available: {available_2025_months}")
+        
+        # Check if we have the critical March data
+        march_data = actual_2025_data[actual_2025_data['Reporting_Month'].isin(['March', 'Mar', 3])]
+        if len(march_data) > 0:
+            march_value = march_data['Student_Counts'].iloc[0]
+            print(f"   March 2025 actual: {march_value:,} students!")
+        else:
+            print(f"   March 2025 data not yet available")
+    else:
+        print(f"   No 2025 actual data found - will forecast all months")
+        available_2025_months = []
+    
+    return complete_data, historical_data, actual_2025_data, available_2025_months
+
+def prepare_dataset_for_modeling(complete_data):
+    """Prepare complete dataset for time series modeling"""
+    print(f"\nPREPARING DATA FOR MODELING")
+    print("="*50)
+    
+    # Handle month names
+    month_mapping = {
+        'January': 1, 'Jan': 1, 'February': 2, 'Feb': 2,
+        'March': 3, 'Mar': 3, 'April': 4, 'Apr': 4,
+        'May': 5, 'June': 6, 'Jun': 6,
+        'July': 7, 'Jul': 7, 'August': 8, 'Aug': 8,
+        'September': 9, 'Sep': 9, 'October': 10, 'Oct': 10,
+        'November': 11, 'Nov': 11, 'December': 12, 'Dec': 12
+    }
+    
+    if complete_data['Reporting_Month'].dtype == 'object':
+        print("Converting month names to numbers...")
+        complete_data['Month_Num'] = complete_data['Reporting_Month'].map(month_mapping)
+    else:
+        complete_data['Month_Num'] = complete_data['Reporting_Month']
+    
+    # Create datetime
+    complete_data['Date'] = pd.to_datetime({
+        'year': complete_data['Reporting_Year'],
+        'month': complete_data['Month_Num'],
+        'day': 1
+    })
+    
+    # Sort by date
+    complete_data = complete_data.sort_values('Date').reset_index(drop=True)
+    
+    # Create time series for available data
+    ts_available = complete_data.set_index('Date')['Student_Counts']
+    
+    print(f"Time series prepared: {len(ts_available)} observations")
+    print(f"   Date range: {ts_available.index.min()} to {ts_available.index.max()}")
+    
+    # Determine which months need forecasting
+    actual_2025_data = complete_data[complete_data['Reporting_Year'] == 2025]
+    if len(actual_2025_data) > 0:
+        available_months_2025 = sorted(actual_2025_data['Month_Num'].unique())
+        all_months = list(range(1, 13))
+        months_to_forecast = [m for m in all_months if m not in available_months_2025]
+        
+        print(f"2025 status:")
+        print(f"   Available months: {available_months_2025}")
+        print(f"   Need to forecast: {months_to_forecast}")
+    else:
+        available_months_2025 = []
+        months_to_forecast = list(range(1, 13))
+        print(f"2025 status: No actual data - forecasting all 12 months")
+    
+    return ts_available, complete_data, available_months_2025, months_to_forecast
+
+# Load your single CSV file
+file_path = "abfs://folder2@printxpp.dfs.core.windows.net/scratch/opts/data.csv"
+
+complete_data, historical_data, actual_2025_data, available_2025_months = load_and_analyze_complete_dataset(file_path)
+ts_available, prepared_data, available_2025_months, months_to_forecast = prepare_dataset_for_modeling(complete_data)
+
+# CELL 2: ANALYZE ACTUAL 2025 PERFORMANCE
+# =========================================================================
+
+def analyze_2025_actual_performance(actual_2025_data, historical_data):
+    """Analyze how actual 2025 data compares to historical patterns"""
+    print(f"\n2025 ACTUAL PERFORMANCE ANALYSIS")
+    print("="*60)
+    
+    if len(actual_2025_data) == 0:
+        print("No actual 2025 data available for analysis")
+        return
+    
+    # Prepare 2025 data for analysis
+    month_mapping = {
+        'January': 1, 'Jan': 1, 'February': 2, 'Feb': 2,
+        'March': 3, 'Mar': 3, 'April': 4, 'Apr': 4,
+        'May': 5, 'June': 6, 'Jun': 6,
+        'July': 7, 'Jul': 7, 'August': 8, 'Aug': 8,
+        'September': 9, 'Sep': 9, 'October': 10, 'Oct': 10,
+        'November': 11, 'Nov': 11, 'December': 12, 'Dec': 12
+    }
+    
+    if actual_2025_data['Reporting_Month'].dtype == 'object':
+        actual_2025_data['Month_Num'] = actual_2025_data['Reporting_Month'].map(month_mapping)
+    else:
+        actual_2025_data['Month_Num'] = actual_2025_data['Reporting_Month']
+    
+    if historical_data['Reporting_Month'].dtype == 'object':
+        historical_data['Month_Num'] = historical_data['Reporting_Month'].map(month_mapping)
+    else:
+        historical_data['Month_Num'] = historical_data['Reporting_Month']
+    
+    print("ACTUAL 2025 DATA:")
+    month_names = {1: 'January', 2: 'February', 3: 'March', 4: 'April',
+                   5: 'May', 6: 'June', 7: 'July', 8: 'August',
+                   9: 'September', 10: 'October', 11: 'November', 12: 'December'}
+    
+    for _, row in actual_2025_data.iterrows():
+        month_name = month_names.get(row['Month_Num'], str(row['Reporting_Month']))
+        print(f"   {month_name}: {row['Student_Counts']:,} students")
+    
+    # Compare to historical averages
+    print(f"\nCOMPARISON TO HISTORICAL AVERAGES:")
+    for _, row in actual_2025_data.iterrows():
+        month_num = row['Month_Num']
+        actual_2025_value = row['Student_Counts']
+        
+        # Historical average for this month
+        historical_month_data = historical_data[historical_data['Month_Num'] == month_num]
+        if len(historical_month_data) > 0:
+            historical_avg = historical_month_data['Student_Counts'].mean()
+            variance_pct = ((actual_2025_value - historical_avg) / historical_avg) * 100
+            
+            month_name = month_names.get(month_num, str(month_num))
+            print(f"   {month_name}: {actual_2025_value:,} vs {historical_avg:,.0f} avg ({variance_pct:+.1f}%)")
+    
+    # Overall progress
+    total_2025_so_far = actual_2025_data['Student_Counts'].sum()
+    months_completed = len(actual_2025_data)
+    
+    print(f"\n2025 PROGRESS SUMMARY:")
+    print(f"   Total enrollment so far: {total_2025_so_far:,} students")
+    print(f"   Months completed: {months_completed}/12")
+    print(f"   Progress: {(months_completed/12)*100:.1f}% of year")
+    
+    # Project full year if we have significant data
+    if months_completed >= 3:
+        # Get historical monthly distribution
+        historical_monthly_totals = historical_data.groupby('Reporting_Year')['Student_Counts'].sum()
+        historical_avg_annual = historical_monthly_totals.mean()
+        
+        # Calculate what percentage of year we typically have by this point
+        max_month_so_far = max(actual_2025_data['Month_Num'])
+        historical_partial = historical_data[historical_data['Month_Num'] <= max_month_so_far]
+        historical_partial_totals = historical_partial.groupby('Reporting_Year')['Student_Counts'].sum()
+        historical_partial_avg = historical_partial_totals.mean()
+        
+        typical_percentage = historical_partial_avg / historical_avg_annual
+        projected_full_year = total_2025_so_far / typical_percentage
+        
+        print(f"\nFULL YEAR PROJECTION (based on actual data):")
+        print(f"   Projected 2025 total: {projected_full_year:,.0f} students")
+        print(f"   vs Historical average: {((projected_full_year - historical_avg_annual) / historical_avg_annual * 100):+.1f}%")
+
+analyze_2025_actual_performance(actual_2025_data, historical_data)
+
+# CELL 3: FIT MODEL WITH ALL AVAILABLE DATA
+# =========================================================================
+
+def fit_updated_model_with_2025_data(ts_available):
+    """Fit SARIMA model using all available data including 2025"""
+    print(f"\nFITTING UPDATED MODEL WITH 2025 DATA")
+    print("="*60)
+    
+    print(f"Model training data: {len(ts_available)} observations")
+    print(f"   Latest data point: {ts_available.index[-1]}")
+    
+    # Handle extreme seasonality
+    ts_log = np.log(ts_available + 1)
+    ts_sqrt = np.sqrt(ts_available)
+    
+    cv_original = ts_available.std() / ts_available.mean()
+    cv_log = ts_log.std() / ts_log.mean()
+    cv_sqrt = ts_sqrt.std() / ts_sqrt.mean()
+    
+    print(f"\nTransformation analysis:")
+    print(f"   Original CV: {cv_original:.3f}")
+    print(f"   Log CV: {cv_log:.3f}")
+    print(f"   Sqrt CV: {cv_sqrt:.3f}")
+    
+    # Choose transformation
+    if cv_log < cv_original and cv_log < cv_sqrt:
+        print("Using LOG transformation")
+        ts_transformed = ts_log
+        transformation = 'log'
+    elif cv_sqrt < cv_original:
+        print("Using SQRT transformation")
+        ts_transformed = ts_sqrt
+        transformation = 'sqrt'
+    else:
+        print("Using ORIGINAL data")
+        ts_transformed = ts_available
+        transformation = 'none'
+    
+    # Fit SARIMA models
+    print(f"\nTesting SARIMA configurations:")
+    
+    best_model = None
+    best_aic = float('inf')
+    
+    configs = [
+        ((1,1,1), (1,1,1,12)),
+        ((2,1,1), (1,1,1,12)),
+        ((1,1,2), (1,1,1,12)),
+        ((0,1,1), (0,1,1,12)),
+        ((1,1,0), (1,1,0,12)),
+    ]
+    
+    for order, seasonal_order in configs:
+        try:
+            model = ARIMA(ts_transformed, order=order, seasonal_order=seasonal_order)
+            fitted = model.fit()
+            print(f"   SARIMA{order}x{seasonal_order}[12] - AIC: {fitted.aic:.2f}")
+            
+            if fitted.aic < best_aic:
+                best_aic = fitted.aic
+                best_model = fitted
+                best_config = (order, seasonal_order)
+        except:
+            print(f"   SARIMA{order}x{seasonal_order}[12] - Failed")
+    
+    if best_model:
+        print(f"\nBest updated model: SARIMA{best_config[0]}x{best_config[1]}[12]")
+        print(f"   AIC: {best_aic:.2f}")
+        best_model.transformation = transformation
+        
+        # Model improvement analysis
+        data_2025_count = len(ts_available[ts_available.index.year == 2025])
+        if data_2025_count > 0:
+            print(f"   Model includes {data_2025_count} months of 2025 actual data")
+            print(f"   This should significantly improve forecast accuracy")
+        
+    return best_model, transformation
+
+updated_model, transformation = fit_updated_model_with_2025_data(ts_available)
+
+# CELL 4: FORECAST REMAINING 2025 MONTHS ONLY
+# =========================================================================
+
+def forecast_remaining_months_only(model, months_to_forecast, transformation):
+    """Forecast only the remaining months of 2025"""
+    print(f"\nFORECASTING REMAINING 2025 MONTHS")
+    print("="*60)
+    
+    if not months_to_forecast:
+        print("All 2025 months have actual data - no forecasting needed!")
+        return None
+    
+    print(f"Months needing forecasts: {months_to_forecast}")
+    print(f"   Total forecasts to generate: {len(months_to_forecast)}")
+    
+    # Generate forecasts for remaining months
+    forecast = model.forecast(steps=len(months_to_forecast))
+    conf_int = model.get_forecast(steps=len(months_to_forecast)).conf_int()
+    
+    # Transform back to original scale
+    if transformation == 'log':
+        forecast = np.exp(forecast) - 1
+        conf_int = np.exp(conf_int) - 1
+    elif transformation == 'sqrt':
+        forecast = forecast ** 2
+        conf_int = conf_int ** 2
+    
+    # Create month names
+    month_names = {1: 'January', 2: 'February', 3: 'March', 4: 'April',
+                   5: 'May', 6: 'June', 7: 'July', 8: 'August',
+                   9: 'September', 10: 'October', 11: 'November', 12: 'December'}
+    
+    # Create forecast DataFrame
+    forecast_df = pd.DataFrame({
+        'Month_Num': months_to_forecast,
+        'Month': [month_names[m] for m in months_to_forecast],
+        'Forecast': forecast.round(0),
+        'Lower_CI': conf_int.iloc[:, 0].round(0),
+        'Upper_CI': conf_int.iloc[:, 1].round(0)
+    })
+    
+    # Calculate confidence metrics
+    forecast_df['CI_Width'] = forecast_df['Upper_CI'] - forecast_df['Lower_CI']
+    forecast_df['Relative_CI_Width'] = (forecast_df['CI_Width'] / forecast_df['Forecast']) * 100
+    
+    # Improved confidence ratings (more realistic for updated model)
+    def assign_realistic_confidence(rel_width):
+        if rel_width <= 15:
+            return "Very High"
+        elif rel_width <= 25:
+            return "High"
+        elif rel_width <= 40:
+            return "Medium"
+        elif rel_width <= 60:
+            return "Low"
+        else:
+            return "Very Low"
+    
+    forecast_df['Confidence_Rating'] = forecast_df['Relative_CI_Width'].apply(assign_realistic_confidence)
+    
+    print("REMAINING 2025 FORECASTS:")
+    print("="*70)
+    display_cols = ['Month', 'Forecast', 'Lower_CI', 'Upper_CI', 'Confidence_Rating', 'Relative_CI_Width']
+    print(forecast_df[display_cols].to_string(index=False))
+    
+    # Forecast quality assessment
+    high_conf_count = len(forecast_df[forecast_df['Confidence_Rating'].isin(['Very High', 'High'])])
+    avg_uncertainty = forecast_df['Relative_CI_Width'].mean()
+    
+    print(f"\nFORECAST QUALITY ASSESSMENT:")
+    print(f"   High confidence forecasts: {high_conf_count}/{len(forecast_df)}")
+    print(f"   Average uncertainty: {avg_uncertainty:.1f}%")
+    
+    if avg_uncertainty < 30:
+        print("   EXCELLENT: Much better than typical monthly forecasting!")
+    elif avg_uncertainty < 50:
+        print("   GOOD: Significantly improved confidence")
+    else:
+        print("   MODERATE: Some uncertainty remains")
+    
+    return forecast_df
+
+remaining_forecasts = forecast_remaining_months_only(updated_model, months_to_forecast, transformation)
+
+# CELL 5: CREATE COMPLETE 2025 PROJECTION
+# =========================================================================
+
+def create_final_2025_projection(prepared_data, remaining_forecasts):
+    """Create final complete 2025 projection with actual + forecast data"""
+    print(f"\nCOMPLETE 2025 ENROLLMENT PROJECTION")
+    print("="*70)
+    
+    month_names = {1: 'January', 2: 'February', 3: 'March', 4: 'April',
+                   5: 'May', 6: 'June', 7: 'July', 8: 'August',
+                   9: 'September', 10: 'October', 11: 'November', 12: 'December'}
+    
+    complete_2025 = []
+    
+    # Add actual 2025 data
+    actual_2025_data = prepared_data[prepared_data['Reporting_Year'] == 2025]
+    for _, row in actual_2025_data.iterrows():
+        complete_2025.append({
+            'Month_Num': row['Month_Num'],
+            'Month': month_names[row['Month_Num']],
+            'Students': row['Student_Counts'],
+            'Type': 'Actual',
+            'Lower_CI': row['Student_Counts'],
+            'Upper_CI': row['Student_Counts'],
+            'Confidence': 'Actual Data',
+            'Uncertainty_Pct': 0.0
+        })
+    
+    # Add forecast data
+    if remaining_forecasts is not None:
+        for _, row in remaining_forecasts.iterrows():
+            complete_2025.append({
+                'Month_Num': row['Month_Num'],
+                'Month': row['Month'],
+                'Students': row['Forecast'],
+                'Type': 'Forecast',
+                'Lower_CI': row['Lower_CI'],
+                'Upper_CI': row['Upper_CI'],
+                'Confidence': row['Confidence_Rating'],
+                'Uncertainty_Pct': row['Relative_CI_Width']
+            })
+    
+    # Create final DataFrame
+    final_2025_df = pd.DataFrame(complete_2025)
+    final_2025_df = final_2025_df.sort_values('Month_Num').reset_index(drop=True)
+    
+    print("FINAL 2025 ENROLLMENT PROJECTION:")
+    print("="*80)
+    display_cols = ['Month', 'Students', 'Type', 'Lower_CI', 'Upper_CI', 'Confidence']
+    print(final_2025_df[display_cols].to_string(index=False))
+    
+    # Calculate comprehensive totals
+    total_actual = final_2025_df[final_2025_df['Type'] == 'Actual']['Students'].sum()
+    total_forecast = final_2025_df[final_2025_df['Type'] == 'Forecast']['Students'].sum()
+    total_2025 = total_actual + total_forecast
+    
+    # Lower and upper bounds for total
+    total_lower = (final_2025_df[final_2025_df['Type'] == 'Actual']['Lower_CI'].sum() + 
+                   final_2025_df[final_2025_df['Type'] == 'Forecast']['Lower_CI'].sum())
+    total_upper = (final_2025_df[final_2025_df['Type'] == 'Actual']['Upper_CI'].sum() + 
+                   final_2025_df[final_2025_df['Type'] == 'Forecast']['Upper_CI'].sum())
+    
+    print(f"\nFINAL 2025 SUMMARY:")
+    print(f"   Actual enrollment (confirmed): {total_actual:,} students")
+    print(f"   Forecasted enrollment (remaining): {total_forecast:,} students")
+    print(f"   TOTAL 2025 PROJECTION: {total_2025:,} students")
+    print(f"   Range: {total_lower:,.0f} - {total_upper:,.0f} students")
+    
+    # Historical comparison
+    historical_totals = prepared_data[prepared_data['Reporting_Year'] < 2025].groupby('Reporting_Year')['Student_Counts'].sum()
+    historical_avg = historical_totals.mean()
+    
+    print(f"\nCOMPARISON TO HISTORICAL PERFORMANCE:")
+    print(f"   Historical average (2021-2024): {historical_avg:,.0f} students/year")
+    print(f"   2025 vs historical: {((total_2025 - historical_avg) / historical_avg * 100):+.1f}%")
+    
+    # Data quality assessment
+    actual_months = len(final_2025_df[final_2025_df['Type'] == 'Actual'])
+    forecast_months = len(final_2025_df[final_2025_df['Type'] == 'Forecast'])
+    
+    print(f"\nPROJECTION RELIABILITY:")
+    print(f"   Based on actual data: {actual_months}/12 months ({(actual_months/12)*100:.1f}%)")
+    print(f"   Based on forecasts: {forecast_months}/12 months ({(forecast_months/12)*100:.1f}%)")
+    
+    if actual_months >= 6:
+        print("   VERY HIGH RELIABILITY: Majority of year is actual data")
+    elif actual_months >= 3:
+        print("   HIGH RELIABILITY: Significant actual data available")
+    else:
+        print("   MODERATE RELIABILITY: Limited actual data available")
+    
+    return final_2025_df
+
+# Create final projection
+final_2025_projection = create_final_2025_projection(prepared_data, remaining_forecasts)
+
+# CELL 6: VISUALIZATION AND BUSINESS RECOMMENDATIONS
+# =========================================================================
+
+def create_comprehensive_visualization(ts_available, final_2025_projection):
+    """Create comprehensive visualization of the analysis"""
+    print(f"\nCREATING COMPREHENSIVE VISUALIZATION")
+    print("="*50)
+    
+    fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+    
+    # Plot 1: Complete timeline
+    historical_ts = ts_available[ts_available.index.year < 2025]
+    actual_2025_ts = ts_available[ts_available.index.year == 2025]
+    
+    axes[0,0].plot(historical_ts.index, historical_ts.values, 
+                   marker='o', linewidth=2, label='Historical (2021-2024)', color='blue')
+    
+    if len(actual_2025_ts) > 0:
+        axes[0,0].plot(actual_2025_ts.index, actual_2025_ts.values, 
+                       marker='o', linewidth=2, markersize=8, 
+                       label='Actual 2025', color='green')
+    
+    if remaining_forecasts is not None:
+        forecast_dates = pd.to_datetime([f'2025-{m:02d}-01' for m in remaining_forecasts['Month_Num']])
+        axes[0,0].plot(forecast_dates, remaining_forecasts['Forecast'], 
+                       marker='s', linewidth=3, markersize=8,
+                       label='Forecasted 2025', color='red')
+    
+    axes[0,0].set_title('Complete Enrollment Timeline: Historical + 2025', fontweight='bold')
+    axes[0,0].set_ylabel('Student Count')
+    axes[0,0].legend()
+    axes[0,0].grid(True, alpha=0.3)
+    axes[0,0].tick_params(axis='x', rotation=45)
+    
+    # Plot 2: 2025 Monthly breakdown
+    months = final_2025_projection['Month']
+    students = final_2025_projection['Students']
+    colors = ['green' if t == 'Actual' else 'red' for t in final_2025_projection['Type']]
+    
+    bars = axes[0,1].bar(months, students, color=colors, alpha=0.7, edgecolor='black')
+    
+    for bar, value in zip(bars, students):
+        axes[0,1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + value*0.01, 
+                      f'{value:,.0f}', ha='center', va='bottom', fontsize=9)
+    
+    axes[0,1].set_title('2025 Monthly Enrollment: Actual vs Forecasted', fontweight='bold')
+    axes[0,1].set_ylabel('Student Count')
+    axes[0,1].tick_params(axis='x', rotation=45)
+    axes[0,1].grid(True, alpha=0.3, axis='y')
+    
+    # Plot 3: Year-over-year comparison
+    yearly_totals = prepared_data.groupby('Reporting_Year')['Student_Counts'].sum()
+    years = yearly_totals.index
+    totals = yearly_totals.values
+    
+    # Add 2025 projection
+    if final_2025_projection is not None:
+        total_2025 = final_2025_projection['Students'].sum()
+        years = list(years) + [2025]
+        totals = list(totals) + [total_2025]
+    
+    colors_yearly = ['blue' if y < 2025 else 'orange' for y in years]
+    bars_yearly = axes[1,0].bar(years, totals, color=colors_yearly, alpha=0.7, edgecolor='black')
+    
+    for bar, value in zip(bars_yearly, totals):
+        axes[1,0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + value*0.01, 
+                      f'{value:,.0f}', ha='center', va='bottom', fontsize=10)
+    
+    axes[1,0].set_title('Annual Enrollment Totals', fontweight='bold')
+    axes[1,0].set_ylabel('Total Students')
+    axes[1,0].set_xlabel('Year')
+    axes[1,0].grid(True, alpha=0.3, axis='y')
+    
+    # Plot 4: Confidence analysis
+    if remaining_forecasts is not None:
+        conf_ratings = remaining_forecasts['Confidence_Rating'].value_counts()
+        axes[1,1].pie(conf_ratings.values, labels=conf_ratings.index, autopct='%1.1f%%')
+        axes[1,1].set_title('Forecast Confidence Distribution', fontweight='bold')
+    else:
+        axes[1,1].text(0.5, 0.5, 'All 2025 Data\nActual', ha='center', va='center', 
+                      fontsize=16, fontweight='bold', transform=axes[1,1].transAxes)
+        axes[1,1].set_title('2025 Data Status', fontweight='bold')
+    
+    plt.tight_layout()
+    plt.show()
+    print("Comprehensive visualization created!")
+
+def provide_business_recommendations(final_2025_projection, months_to_forecast):
+    """Provide actionable business recommendations"""
+    print(f"\nBUSINESS RECOMMENDATIONS")
+    print("="*60)
+    
+    actual_months = len(final_2025_projection[final_2025_projection['Type'] == 'Actual'])
+    forecast_months = len(months_to_forecast) if months_to_forecast else 0
+    
+    print(f"CURRENT SITUATION:")
+    print(f"   Actual data coverage: {actual_months}/12 months")
+    print(f"   Forecast dependency: {forecast_months}/12 months")
+    
+    print(f"\nIMMEDIATE ACTIONS:")
+    
+    if actual_months > 0:
+        print(f"1. LEVERAGE ACTUAL DATA:")
+        print(f"   You have {actual_months} months of 2025 actual data")
+        print(f"   This provides much higher accuracy than pure forecasting")
+        print(f"   Use this data to validate and improve your planning")
+        
+    if forecast_months > 0:
+        print(f"\n2. MONITOR FORECAST ACCURACY:")
+        print(f"   Track actual vs forecasted results monthly")
+        print(f"   Update forecasts as new data becomes available")
+        print(f"   Build forecast accuracy metrics")
+        
+    print(f"\n3. MONTHLY UPDATE PROCESS:")
+    print(f"   Add new month's actual data as it becomes available")
+    print(f"   Rerun this analysis monthly for updated forecasts")
+    print(f"   Compare actual results to previous forecasts")
+    
+    print(f"\n4. PLANNING RECOMMENDATIONS:")
+    total_projection = final_2025_projection['Students'].sum()
+    print(f"   Plan for {total_projection:,} total 2025 students")
+    print(f"   Use confidence intervals for resource planning")
+    print(f"   Prepare contingency plans for forecast uncertainty")
+    
+    if 3 in final_2025_projection[final_2025_projection['Type'] == 'Actual']['Month_Num'].values:
+        print(f"\n5. MARCH SURGE INSIGHTS:")
+        march_actual = final_2025_projection[
+            (final_2025_projection['Month_Num'] == 3) & 
+            (final_2025_projection['Type'] == 'Actual')
+        ]['Students'].iloc[0]
+        print(f"   March 2025 surge: {march_actual:,} students (actual)")
+        print(f"   Use this for validating seasonal planning")
+
+# Create final visualizations and recommendations
+create_comprehensive_visualization(ts_available, final_2025_projection)
+provide_business_recommendations(final_2025_projection, months_to_forecast)
+
+print("\n" + "="*70)
+print("REAL-TIME 2025 FORECASTING COMPLETE!")
+print("   Incorporates actual 2025 data for better accuracy")
+print("   Forecasts only remaining months")
+print("   Provides complete 2025 enrollment projection")
+print("   Updates model with latest data")
+print("="*70)
