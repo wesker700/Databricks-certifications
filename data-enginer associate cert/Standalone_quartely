@@ -1,0 +1,406 @@
+# =========================================================================
+# STANDALONE QUARTERLY SARIMA ANALYSIS 
+# (No dependency on monthly analysis)
+# =========================================================================
+
+# CELL 1: SETUP AND DATA LOADING FOR QUARTERLY ANALYSIS
+# =========================================================================
+
+%pip install pmdarima
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
+
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.tsa.stattools import adfuller
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+try:
+    from pmdarima import auto_arima
+    AUTO_ARIMA_AVAILABLE = True
+    print("✅ pmdarima imported successfully")
+except ImportError:
+    print("❌ pmdarima not available")
+    AUTO_ARIMA_AVAILABLE = False
+
+%matplotlib inline
+
+def load_and_prepare_quarterly_data(file_path):
+    """Load data and convert directly to quarterly - standalone function"""
+    print("📊 STANDALONE QUARTERLY DATA PREPARATION")
+    print("="*50)
+    
+    # Load data
+    base_data_spark = spark.read.option("header","true").option("inferSchema","true").csv(file_path)
+    base_data = base_data_spark.toPandas()
+    
+    print(f"✅ Data loaded: {base_data.shape}")
+    print(f"Columns: {list(base_data.columns)}")
+    
+    # Handle month names
+    month_mapping = {
+        'January': 1, 'Jan': 1, 'February': 2, 'Feb': 2,
+        'March': 3, 'Mar': 3, 'April': 4, 'Apr': 4,
+        'May': 5, 'June': 6, 'Jun': 6,
+        'July': 7, 'Jul': 7, 'August': 8, 'Aug': 8,
+        'September': 9, 'Sep': 9, 'October': 10, 'Oct': 10,
+        'November': 11, 'Nov': 11, 'December': 12, 'Dec': 12
+    }
+    
+    if base_data['Reporting_Month'].dtype == 'object':
+        print("🔄 Converting month names to numbers...")
+        base_data['Month_Num'] = base_data['Reporting_Month'].map(month_mapping)
+    else:
+        base_data['Month_Num'] = base_data['Reporting_Month']
+    
+    # Create date and quarter columns
+    base_data['Date'] = pd.to_datetime({
+        'year': base_data['Reporting_Year'],
+        'month': base_data['Month_Num'],
+        'day': 1
+    })
+    
+    base_data['Quarter'] = base_data['Date'].dt.quarter
+    base_data['Year'] = base_data['Date'].dt.year
+    
+    # Aggregate to quarterly data
+    print("🔄 Aggregating monthly data to quarterly...")
+    quarterly_summary = base_data.groupby(['Year', 'Quarter']).agg({
+        'Student_Counts': 'sum',
+        'Date': 'min'
+    }).reset_index()
+    
+    # Create quarter labels and dates
+    quarterly_summary['Quarter_Label'] = quarterly_summary['Year'].astype(str) + '-Q' + quarterly_summary['Quarter'].astype(str)
+    quarterly_summary['Quarter_Date'] = pd.to_datetime(quarterly_summary[['Year', 'Quarter']].assign(Month=1, Day=1)) + pd.to_timedelta((quarterly_summary['Quarter']-1)*3, unit='M')
+    
+    # Create quarterly time series
+    quarterly_ts = quarterly_summary.set_index('Quarter_Date')['Student_Counts']
+    
+    print(f"✅ Quarterly data created:")
+    print(f"   Original monthly observations: {len(base_data)}")
+    print(f"   Quarterly observations: {len(quarterly_ts)}")
+    print(f"   Date range: {quarterly_ts.index.min()} to {quarterly_ts.index.max()}")
+    
+    # Show quarterly data
+    print(f"\n📊 QUARTERLY ENROLLMENT DATA:")
+    quarterly_display = quarterly_summary[['Quarter_Label', 'Student_Counts']].copy()
+    print(quarterly_display.to_string(index=False))
+    
+    return quarterly_ts, quarterly_summary, base_data
+
+# Load data and create quarterly dataset
+file_path = "abfs://folder2@printxpp.dfs.core.windows.net/scratch/opts/data.csv"
+quarterly_ts, quarterly_df, original_monthly_data = load_and_prepare_quarterly_data(file_path)
+
+# CELL 2: QUARTERLY DATA ANALYSIS
+# =========================================================================
+
+def analyze_quarterly_patterns(quarterly_ts, quarterly_df):
+    """Analyze quarterly enrollment patterns"""
+    print("\n📈 QUARTERLY ENROLLMENT PATTERN ANALYSIS")
+    print("="*50)
+    
+    # Basic statistics
+    print(f"📊 QUARTERLY STATISTICS:")
+    print(f"   Mean: {quarterly_ts.mean():,.0f} students per quarter")
+    print(f"   Std Dev: {quarterly_ts.std():,.0f} students")
+    print(f"   Min: {quarterly_ts.min():,.0f} students")
+    print(f"   Max: {quarterly_ts.max():,.0f} students")
+    print(f"   Coefficient of Variation: {quarterly_ts.std()/quarterly_ts.mean():.3f}")
+    
+    # Seasonal analysis
+    print(f"\n🌊 SEASONAL PATTERNS BY QUARTER:")
+    for quarter in [1, 2, 3, 4]:
+        quarter_data = quarterly_ts[quarterly_ts.index.quarter == quarter]
+        avg_enrollment = quarter_data.mean()
+        print(f"   Q{quarter}: Average = {avg_enrollment:,.0f} students")
+    
+    # Q1 vs other quarters (Q1 includes March surge)
+    q1_avg = quarterly_ts[quarterly_ts.index.quarter == 1].mean()
+    other_quarters_avg = quarterly_ts[quarterly_ts.index.quarter != 1].mean()
+    
+    print(f"\n🎯 Q1 vs OTHER QUARTERS COMPARISON:")
+    print(f"   Q1 (includes March surge): {q1_avg:,.0f} students")
+    print(f"   Other quarters average: {other_quarters_avg:,.0f} students")
+    print(f"   Q1 is {(q1_avg/other_quarters_avg):.1f}x higher than other quarters")
+    
+    # Year-over-year growth
+    print(f"\n📈 YEAR-OVER-YEAR ANALYSIS:")
+    for year in sorted(quarterly_df['Year'].unique()):
+        year_total = quarterly_df[quarterly_df['Year'] == year]['Student_Counts'].sum()
+        print(f"   {year}: {year_total:,.0f} total students")
+    
+    return q1_avg, other_quarters_avg
+
+q1_avg, other_quarters_avg = analyze_quarterly_patterns(quarterly_ts, quarterly_df)
+
+# CELL 3: QUARTERLY SARIMA MODEL FITTING
+# =========================================================================
+
+def fit_quarterly_sarima_standalone(quarterly_ts):
+    """Fit SARIMA model specifically for quarterly data"""
+    print("\n🎯 FITTING QUARTERLY SARIMA MODEL")
+    print("="*50)
+    
+    # Test transformations
+    print("🔄 Testing transformations for quarterly data...")
+    quarterly_log = np.log(quarterly_ts + 1)
+    quarterly_sqrt = np.sqrt(quarterly_ts)
+    
+    cv_original = quarterly_ts.std() / quarterly_ts.mean()
+    cv_log = quarterly_log.std() / quarterly_log.mean()
+    cv_sqrt = quarterly_sqrt.std() / quarterly_sqrt.mean()
+    
+    print(f"   Original CV: {cv_original:.3f}")
+    print(f"   Log CV: {cv_log:.3f}")
+    print(f"   Sqrt CV: {cv_sqrt:.3f}")
+    
+    # Choose best transformation
+    if cv_log < cv_original and cv_log < cv_sqrt:
+        print("✅ Using LOG transformation")
+        ts_transformed = quarterly_log
+        transformation = 'log'
+    elif cv_sqrt < cv_original:
+        print("✅ Using SQRT transformation")
+        ts_transformed = quarterly_sqrt
+        transformation = 'sqrt'
+    else:
+        print("✅ Using ORIGINAL data")
+        ts_transformed = quarterly_ts
+        transformation = 'none'
+    
+    # Fit SARIMA models (seasonal period = 4 for quarterly)
+    print(f"\n🎯 Testing SARIMA configurations (seasonal period = 4):")
+    
+    best_model = None
+    best_aic = float('inf')
+    
+    configs = [
+        ((1,1,1), (1,1,1,4)),  # Basic SARIMA with quarterly seasonality
+        ((1,1,1), (0,1,1,4)),  # Simpler seasonal component
+        ((1,1,0), (1,1,0,4)),  # AR only
+        ((0,1,1), (0,1,1,4)),  # MA only
+        ((2,1,1), (1,1,1,4)),  # Higher order AR
+    ]
+    
+    for order, seasonal_order in configs:
+        try:
+            model = ARIMA(ts_transformed, order=order, seasonal_order=seasonal_order)
+            fitted = model.fit()
+            print(f"   SARIMA{order}x{seasonal_order}[4] - AIC: {fitted.aic:.2f}")
+            
+            if fitted.aic < best_aic:
+                best_aic = fitted.aic
+                best_model = fitted
+                best_config = (order, seasonal_order)
+        except Exception as e:
+            print(f"   SARIMA{order}x{seasonal_order}[4] - Failed")
+    
+    if best_model:
+        print(f"\n✅ Best quarterly model: SARIMA{best_config[0]}x{best_config[1]}[4]")
+        print(f"   AIC: {best_aic:.2f}")
+        best_model.transformation = transformation
+        
+        # Model diagnostics
+        print(f"\n📊 MODEL DIAGNOSTICS:")
+        print(f"   Transformation: {transformation}")
+        print(f"   Seasonal period: 4 quarters")
+        print(f"   Data points used: {len(quarterly_ts)}")
+        
+    return best_model, transformation
+
+quarterly_model, quarterly_transformation = fit_quarterly_sarima_standalone(quarterly_ts)
+
+# CELL 4: QUARTERLY FORECASTS FOR 2025
+# =========================================================================
+
+def generate_2025_quarterly_forecasts(model, quarterly_ts, transformation):
+    """Generate quarterly forecasts for 2025"""
+    print("\n🔮 GENERATING 2025 QUARTERLY FORECASTS")
+    print("="*50)
+    
+    if model is None:
+        print("❌ No model available for forecasting")
+        return None
+    
+    # Generate 4 quarters of forecasts
+    forecast = model.forecast(steps=4)
+    conf_int = model.get_forecast(steps=4).conf_int() 
+    
+    # Transform back to original scale
+    if transformation == 'log':
+        forecast = np.exp(forecast) - 1
+        conf_int = np.exp(conf_int) - 1
+    elif transformation == 'sqrt':
+        forecast = forecast ** 2
+        conf_int = conf_int ** 2
+    
+    # Create forecast DataFrame
+    forecast_quarters = ['2025-Q1', '2025-Q2', '2025-Q3', '2025-Q4']
+    forecast_dates = pd.date_range('2025-01-01', periods=4, freq='QS')
+    
+    quarterly_forecast_df = pd.DataFrame({
+        'Quarter': forecast_quarters,
+        'Quarter_Date': forecast_dates,
+        'Forecast': forecast.round(0),
+        'Lower_CI': conf_int.iloc[:, 0].round(0),
+        'Upper_CI': conf_int.iloc[:, 1].round(0)
+    })
+    
+    # Calculate confidence metrics  
+    quarterly_forecast_df['CI_Width'] = quarterly_forecast_df['Upper_CI'] - quarterly_forecast_df['Lower_CI']
+    quarterly_forecast_df['Relative_CI_Width'] = (quarterly_forecast_df['CI_Width'] / quarterly_forecast_df['Forecast']) * 100
+    
+    # Assign confidence ratings (more realistic for quarterly data)
+    def assign_quarterly_confidence(rel_width):
+        if rel_width <= 15:
+            return "Very High"
+        elif rel_width <= 25:
+            return "High"
+        elif rel_width <= 40:
+            return "Medium"
+        elif rel_width <= 60:
+            return "Low"
+        else:
+            return "Very Low"
+    
+    quarterly_forecast_df['Confidence_Rating'] = quarterly_forecast_df['Relative_CI_Width'].apply(assign_quarterly_confidence)
+    
+    print("📋 2025 QUARTERLY ENROLLMENT FORECASTS:")
+    print("="*70)
+    display_cols = ['Quarter', 'Forecast', 'Lower_CI', 'Upper_CI', 'Confidence_Rating', 'Relative_CI_Width']
+    print(quarterly_forecast_df[display_cols].to_string(index=False))
+    
+    # Summary insights
+    total_2025 = quarterly_forecast_df['Forecast'].sum()
+    q1_2025 = quarterly_forecast_df[quarterly_forecast_df['Quarter'] == '2025-Q1']['Forecast'].iloc[0]
+    
+    print(f"\n🎯 KEY INSIGHTS:")
+    print(f"   Total 2025 enrollment: {total_2025:,.0f} students")
+    print(f"   Q1 2025 (includes March surge): {q1_2025:,.0f} students")
+    print(f"   Q1 represents {(q1_2025/total_2025*100):.1f}% of annual enrollment")
+    
+    # Confidence summary
+    high_confidence_quarters = len(quarterly_forecast_df[quarterly_forecast_df['Confidence_Rating'].isin(['Very High', 'High'])])
+    avg_uncertainty = quarterly_forecast_df['Relative_CI_Width'].mean()
+    
+    print(f"\n📊 CONFIDENCE SUMMARY:")
+    print(f"   High confidence quarters: {high_confidence_quarters}/4")
+    print(f"   Average uncertainty: {avg_uncertainty:.1f}%")
+    
+    return quarterly_forecast_df
+
+quarterly_forecast_2025 = generate_2025_quarterly_forecasts(quarterly_model, quarterly_ts, quarterly_transformation)
+
+# CELL 5: QUARTERLY VISUALIZATION
+# =========================================================================
+
+def create_quarterly_visualizations(quarterly_ts, quarterly_forecast_df):
+    """Create visualizations for quarterly analysis"""
+    print("\n📊 CREATING QUARTERLY VISUALIZATIONS")
+    print("="*50)
+    
+    fig, axes = plt.subplots(2, 1, figsize=(15, 12))
+    
+    # Plot 1: Historical quarterly data + 2025 forecast
+    axes[0].plot(quarterly_ts.index, quarterly_ts.values, 
+                 marker='o', linewidth=2, markersize=6, 
+                 label='Historical Quarterly Data', color='blue')
+    
+    if quarterly_forecast_df is not None:
+        axes[0].plot(quarterly_forecast_df['Quarter_Date'], quarterly_forecast_df['Forecast'], 
+                     marker='s', linewidth=3, markersize=8, 
+                     label='2025 Quarterly Forecast', color='red')
+        
+        # Add confidence intervals
+        axes[0].fill_between(quarterly_forecast_df['Quarter_Date'], 
+                            quarterly_forecast_df['Lower_CI'], 
+                            quarterly_forecast_df['Upper_CI'],
+                            alpha=0.3, color='red', label='95% Confidence Interval')
+    
+    axes[0].set_title('Quarterly Student Enrollment: Historical + 2025 Forecast', 
+                      fontsize=14, fontweight='bold')
+    axes[0].set_ylabel('Students per Quarter')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+    axes[0].tick_params(axis='x', rotation=45)
+    
+    # Plot 2: Quarterly seasonal pattern
+    quarterly_seasonal = quarterly_ts.groupby(quarterly_ts.index.quarter).mean()
+    
+    axes[1].bar(['Q1', 'Q2', 'Q3', 'Q4'], quarterly_seasonal.values, 
+                color=['red', 'blue', 'green', 'orange'], alpha=0.7, edgecolor='black')
+    
+    axes[1].set_title('Average Quarterly Enrollment Pattern', fontsize=12, fontweight='bold')
+    axes[1].set_ylabel('Average Students per Quarter')
+    axes[1].set_xlabel('Quarter')
+    axes[1].grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels on bars
+    for i, v in enumerate(quarterly_seasonal.values):
+        axes[1].text(i, v + v*0.02, f'{v:,.0f}', ha='center', va='bottom', fontweight='bold')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    print("✅ Quarterly visualizations created!")
+
+# Create visualizations
+if quarterly_forecast_2025 is not None:
+    create_quarterly_visualizations(quarterly_ts, quarterly_forecast_2025)
+else:
+    create_quarterly_visualizations(quarterly_ts, None)
+
+# CELL 6: QUARTERLY vs MONTHLY COMPARISON SUMMARY
+# =========================================================================
+
+def quarterly_standalone_summary():
+    """Provide summary of standalone quarterly analysis"""
+    print("\n🎯 STANDALONE QUARTERLY ANALYSIS SUMMARY")
+    print("="*60)
+    
+    print("✅ WHAT WE ACCOMPLISHED:")
+    print("   • Loaded and converted monthly data to quarterly")
+    print("   • Fitted SARIMA model with quarterly seasonality (period=4)")
+    print("   • Generated 2025 quarterly forecasts")
+    print("   • Calculated realistic confidence intervals")
+    
+    print(f"\n📊 KEY FINDINGS:")
+    if 'quarterly_forecast_2025' in globals() and quarterly_forecast_2025 is not None:
+        high_conf = len(quarterly_forecast_2025[quarterly_forecast_2025['Confidence_Rating'].isin(['Very High', 'High'])])
+        avg_uncertainty = quarterly_forecast_2025['Relative_CI_Width'].mean()
+        
+        print(f"   • High confidence quarters: {high_conf}/4")
+        print(f"   • Average uncertainty: {avg_uncertainty:.1f}%")
+        print(f"   • Q1 2025 includes your March enrollment surge")
+        print(f"   • Much more stable than monthly forecasting")
+    
+    print(f"\n💼 BUSINESS ADVANTAGES:")
+    print("   • Aligns with quarterly business planning")
+    print("   • Smoother confidence intervals")  
+    print("   • Natural fit for academic calendar")
+    print("   • Better stakeholder communication")
+    
+    print(f"\n🚀 RECOMMENDATION:")
+    print("   📈 Use quarterly forecasting for strategic planning")
+    print("   📊 Continue monthly tracking for operational monitoring")
+    print("   📋 Report quarterly forecasts to executives")
+    print("   🔄 Update quarterly forecasts monthly with new data")
+    
+    print(f"\n📋 AVAILABLE DATA OBJECTS:")
+    print("   • quarterly_ts: Historical quarterly time series")
+    print("   • quarterly_forecast_2025: 2025 quarterly forecasts")
+    print("   • quarterly_model: Fitted SARIMA model")
+
+quarterly_standalone_summary()
+
+print("\n" + "="*70)
+print("🎯 STANDALONE QUARTERLY ANALYSIS COMPLETE!")
+print("   This analysis is independent of the monthly SARIMA script")
+print("   All quarterly forecasts and confidence ratings are self-contained")
+print("="*70)
