@@ -637,44 +637,57 @@ else:
 
 # Run complete SARIMA analysis
 if not missing_columns:
-    forecast_results, model, complete_timeseries, prediction_table = run_complete_analysis(base_data)
-    
-    # Show results
-    if forecast_results is not None:
-        print("✅ Analysis completed successfully!")
+    try:
+        forecast_results, model, complete_timeseries, prediction_table = run_complete_analysis(base_data)
         
-        # Display the clean prediction table with confidence ratings
-        print("\n📋 2025 ENROLLMENT PREDICTIONS WITH CONFIDENCE ANALYSIS:")
-        print("="*80)
-        print(prediction_table.to_string(index=False))
-        
-        # Show key results for your academic calendar pattern
-        print("\n🎯 KEY RESULTS FOR YOUR ENROLLMENT PATTERN:")
-        print("="*55)
-        
-        jan_forecast = forecast_results[forecast_results['Month'] == 'January']['Forecast'].iloc[0]
-        feb_forecast = forecast_results[forecast_results['Month'] == 'February']['Forecast'].iloc[0]
-        mar_forecast = forecast_results[forecast_results['Month'] == 'March']['Forecast'].iloc[0]
-        
-        print(f"📅 January 2025:  {jan_forecast:>8.0f} students")
-        print(f"📅 February 2025: {feb_forecast:>8.0f} students")
-        print(f"📅 March 2025:    {mar_forecast:>8.0f} students")
-        print(f"📈 Feb→Mar surge: {((mar_forecast - feb_forecast) / feb_forecast * 100):>7.0f}%")
-        
-        # Show sample of complete time series data
-        print(f"\n📊 Sample of Complete 2021-2025 Time Series Data:")
-        print("="*60)
-        sample_data = complete_timeseries[['Date', 'Student_Counts', 'Type', 'Month_Name', 'Year']].head(10)
-        print(sample_data.to_string(index=False))
-        print("...")
-        sample_data_end = complete_timeseries[['Date', 'Student_Counts', 'Type', 'Month_Name', 'Year']].tail(5)
-        print(sample_data_end.to_string(index=False))
-        
-        print(f"\n💾 AVAILABLE DATA OBJECTS:")
-        print(f"   📈 complete_timeseries: Full 2021-2025 timeline ({len(complete_timeseries)} data points)")
-        print(f"   📋 prediction_table: Clean 2025 predictions with confidence ratings")
-        print(f"   🔮 forecast_results: Detailed 2025 forecasts with confidence intervals")
-        print(f"   🤖 model: Fitted SARIMA model for further analysis")
+        # Show results
+        if forecast_results is not None:
+            print("✅ Analysis completed successfully!")
+            
+            # Display the clean prediction table with confidence ratings
+            print("\n📋 2025 ENROLLMENT PREDICTIONS WITH CONFIDENCE ANALYSIS:")
+            print("="*80)
+            print(prediction_table.to_string(index=False))
+            
+            # Show key results for your academic calendar pattern
+            print("\n🎯 KEY RESULTS FOR YOUR ENROLLMENT PATTERN:")
+            print("="*55)
+            
+            jan_forecast = forecast_results[forecast_results['Month'] == 'January']['Forecast'].iloc[0]
+            feb_forecast = forecast_results[forecast_results['Month'] == 'February']['Forecast'].iloc[0]
+            mar_forecast = forecast_results[forecast_results['Month'] == 'March']['Forecast'].iloc[0]
+            
+            print(f"📅 January 2025:  {jan_forecast:>8.0f} students")
+            print(f"📅 February 2025: {feb_forecast:>8.0f} students")
+            print(f"📅 March 2025:    {mar_forecast:>8.0f} students")
+            print(f"📈 Feb→Mar surge: {((mar_forecast - feb_forecast) / feb_forecast * 100):>7.0f}%")
+            
+            # Show sample of complete time series data
+            print(f"\n📊 Sample of Complete 2021-2025 Time Series Data:")
+            print("="*60)
+            sample_data = complete_timeseries[['Date', 'Student_Counts', 'Type', 'Month_Name', 'Year']].head(10)
+            print(sample_data.to_string(index=False))
+            print("...")
+            sample_data_end = complete_timeseries[['Date', 'Student_Counts', 'Type', 'Month_Name', 'Year']].tail(5)
+            print(sample_data_end.to_string(index=False))
+            
+            print(f"\n💾 AVAILABLE DATA OBJECTS:")
+            print(f"   📈 complete_timeseries: Full 2021-2025 timeline ({len(complete_timeseries)} data points)")
+            print(f"   📋 prediction_table: Clean 2025 predictions with confidence ratings")
+            print(f"   🔮 forecast_results: Detailed 2025 forecasts with confidence intervals")
+            print(f"   🤖 model: Fitted SARIMA model for further analysis")
+        else:
+            print("❌ Analysis failed - model could not be fitted")
+            
+    except ValueError as e:
+        print(f"❌ Error during analysis: {e}")
+        print("🔍 This might be due to data format issues. Let's check your data:")
+        print("\nFirst 5 rows of your data:")
+        print(base_data.head())
+        print("\nData types:")
+        print(base_data.dtypes)
+        print("\nUnique values in Reporting_Month:")
+        print(base_data['Reporting_Month'].unique())
         
 else:
     print("❌ Cannot run analysis - please check column names")
