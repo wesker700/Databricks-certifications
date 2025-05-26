@@ -1,9 +1,5 @@
 # =========================================================================
-# PLAN vs ACTUAL FORECASTING FOR 2025
-# (Forecast actual results based on planned 2025 data + historical variance)
-# =========================================================================
-
-# CELL 1: LOAD AND SEPARATE ACTUAL vs PLANNED DATA
+# PLAN vs ACTUAL FORECASTING FOR 2025 (IMPROVED VERSION)
 # =========================================================================
 
 %pip install pmdarima
@@ -14,9 +10,7 @@ import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
 
-from statsmodels.tsa.arima.model import ARIMA
-from statsmodels.tsa.seasonal import seasonal_decompose
-from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 try:
@@ -29,555 +23,185 @@ except ImportError:
 
 %matplotlib inline
 
+# -------------------------------
+# CELL 1: LOAD AND PREP DATA
+# -------------------------------
 def load_and_separate_actual_planned_data(file_path):
-    """Load data and separate historical actual vs 2025 planned data"""
     print("LOADING ACTUAL vs PLANNED DATA")
     print("="*60)
-    
-    # Load complete data
     complete_spark = spark.read.option("header","true").option("inferSchema","true").csv(file_path)
     complete_data = complete_spark.toPandas()
-    
     print(f"Complete dataset loaded: {complete_data.shape}")
     print(f"Years in dataset: {sorted(complete_data['Reporting_Year'].unique())}")
-    
-    # Separate historical actual (2021-2024) and planned 2025 data
     historical_actual = complete_data[complete_data['Reporting_Year'] < 2025].copy()
     planned_2025 = complete_data[complete_data['Reporting_Year'] == 2025].copy()
-    
     print(f"\nDATA BREAKDOWN:")
     print(f"   Historical actual (2021-2024): {len(historical_actual)} observations")
     print(f"   Planned 2025 data: {len(planned_2025)} observations")
-    
-    if len(planned_2025) > 0:
-        available_2025_months = sorted(planned_2025['Reporting_Month'].unique())
-        print(f"   2025 planned months: {available_2025_months}")
-        
-        # Show key planned numbers
-        march_planned = planned_2025[planned_2025['Reporting_Month'].isin(['March', 'Mar', 3])]
-        if len(march_planned) > 0:
-            march_value = march_planned['Student_Counts'].iloc[0]
-            print(f"   March 2025 planned: {march_value:,} students")
-        
-        total_2025_planned = planned_2025['Student_Counts'].sum()
-        print(f"   Total 2025 planned: {total_2025_planned:,} students")
-    else:
-        print(f"   No 2025 planned data found")
-        available_2025_months = []
-    
     return complete_data, historical_actual, planned_2025
 
 def prepare_variance_analysis_data(historical_actual):
-    """Prepare data for variance analysis if plan data exists historically"""
     print(f"\nPREPARING VARIANCE ANALYSIS DATA")
     print("="*50)
-    
-    # Handle month names
-    month_mapping = {
-        'January': 1, 'Jan': 1, 'February': 2, 'Feb': 2,
-        'March': 3, 'Mar': 3, 'April': 4, 'Apr': 4,
-        'May': 5, 'June': 6, 'Jun': 6,
-        'July': 7, 'Jul': 7, 'August': 8, 'Aug': 8,
-        'September': 9, 'Sep': 9, 'October': 10, 'Oct': 10,
-        'November': 11, 'Nov': 11, 'December': 12, 'Dec': 12
-    }
-    
+    month_mapping = {'January': 1, 'Jan': 1, 'February': 2, 'Feb': 2, 'March': 3, 'Mar': 3, 'April': 4, 'Apr': 4, 'May': 5, 'June': 6, 'Jun': 6, 'July': 7, 'Jul': 7, 'August': 8, 'Aug': 8, 'September': 9, 'Sep': 9, 'October': 10, 'Oct': 10, 'November': 11, 'Nov': 11, 'December': 12, 'Dec': 12}
     if historical_actual['Reporting_Month'].dtype == 'object':
         print("Converting month names to numbers...")
         historical_actual['Month_Num'] = historical_actual['Reporting_Month'].map(month_mapping)
     else:
         historical_actual['Month_Num'] = historical_actual['Reporting_Month']
-    
-    # Create datetime
-    historical_actual['Date'] = pd.to_datetime({
-        'year': historical_actual['Reporting_Year'],
-        'month': historical_actual['Month_Num'],
-        'day': 1
-    })
-    
-    # Sort by date
+    historical_actual['Date'] = pd.to_datetime({'year': historical_actual['Reporting_Year'], 'month': historical_actual['Month_Num'], 'day': 1})
     historical_actual = historical_actual.sort_values('Date').reset_index(drop=True)
-    
-    # Create time series for historical actual data
     ts_historical = historical_actual.set_index('Date')['Student_Counts']
-    
     print(f"Historical time series prepared: {len(ts_historical)} observations")
     print(f"   Date range: {ts_historical.index.min()} to {ts_historical.index.max()}")
-    
     return ts_historical, historical_actual
 
-# Load your CSV file with actual + planned data
-file_path = "abfs://folder2@printxpp.dfs.core.windows.net/scratch/opts/data.csv"
-
-complete_data, historical_actual, planned_2025 = load_and_separate_actual_planned_data(file_path)
-ts_historical, historical_prepared = prepare_variance_analysis_data(historical_actual)
-
-# CELL 2: ANALYZE PLANNED 2025 vs HISTORICAL PATTERNS
-# =========================================================================
-
-def analyze_planned_vs_historical_patterns(planned_2025, historical_actual):
-    """Analyze how 2025 planned data compares to historical patterns"""
-    print(f"\nPLANNED 2025 vs HISTORICAL PATTERNS ANALYSIS")
-    print("="*70)
-    
-    if len(planned_2025) == 0:
-        print("No planned 2025 data available for analysis")
-        return
-    
-    # Prepare data for analysis
-    month_mapping = {
-        'January': 1, 'Jan': 1, 'February': 2, 'Feb': 2,
-        'March': 3, 'Mar': 3, 'April': 4, 'Apr': 4,
-        'May': 5, 'June': 6, 'Jun': 6,
-        'July': 7, 'Jul': 7, 'August': 8, 'Aug': 8,
-        'September': 9, 'Sep': 9, 'October': 10, 'Oct': 10,
-        'November': 11, 'Nov': 11, 'December': 12, 'Dec': 12
-    }
-    
-    if planned_2025['Reporting_Month'].dtype == 'object':
-        planned_2025['Month_Num'] = planned_2025['Reporting_Month'].map(month_mapping)
-    else:
-        planned_2025['Month_Num'] = planned_2025['Reporting_Month']
-    
-    if historical_actual['Reporting_Month'].dtype == 'object':
-        historical_actual['Month_Num'] = historical_actual['Reporting_Month'].map(month_mapping)
-    else:
-        historical_actual['Month_Num'] = historical_actual['Reporting_Month']
-    
-    print("PLANNED 2025 DATA:")
-    month_names = {1: 'January', 2: 'February', 3: 'March', 4: 'April',
-                   5: 'May', 6: 'June', 7: 'July', 8: 'August',
-                   9: 'September', 10: 'October', 11: 'November', 12: 'December'}
-    
-    for _, row in planned_2025.iterrows():
-        month_name = month_names.get(row['Month_Num'], str(row['Reporting_Month']))
-        print(f"   {month_name}: {row['Student_Counts']:,} students (planned)")
-    
-    # Compare to historical averages
-    print(f"\nPLANNED vs HISTORICAL AVERAGES:")
-    for _, row in planned_2025.iterrows():
-        month_num = row['Month_Num']
-        planned_2025_value = row['Student_Counts']
-        
-        # Historical average for this month
-        historical_month_data = historical_actual[historical_actual['Month_Num'] == month_num]
-        if len(historical_month_data) > 0:
-            historical_avg = historical_month_data['Student_Counts'].mean()
-            variance_pct = ((planned_2025_value - historical_avg) / historical_avg) * 100
-            
-            month_name = month_names.get(month_num, str(month_num))
-            print(f"   {month_name}: {planned_2025_value:,} vs {historical_avg:,.0f} avg ({variance_pct:+.1f}%)")
-    
-    # Overall comparison
-    total_2025_planned = planned_2025['Student_Counts'].sum()
-    historical_yearly_totals = historical_actual.groupby('Reporting_Year')['Student_Counts'].sum()
-    historical_avg_annual = historical_yearly_totals.mean()
-    
-    print(f"\nOVERALL PLANNED vs HISTORICAL:")
-    print(f"   Total 2025 planned: {total_2025_planned:,} students")
-    print(f"   Historical average: {historical_avg_annual:,.0f} students")
-    print(f"   Plan vs historical: {((total_2025_planned - historical_avg_annual) / historical_avg_annual * 100):+.1f}%")
-    
-    # Planning assumption assessment
-    print(f"\nPLANNING ASSUMPTIONS ASSESSMENT:")
-    if total_2025_planned > historical_avg_annual * 1.1:
-        print("   AGGRESSIVE: 2025 plan is >10% above historical average")
-    elif total_2025_planned > historical_avg_annual * 1.05:
-        print("   OPTIMISTIC: 2025 plan is 5-10% above historical average")
-    elif total_2025_planned < historical_avg_annual * 0.95:
-        print("   CONSERVATIVE: 2025 plan is <95% of historical average")
-    else:
-        print("   REALISTIC: 2025 plan is close to historical average")
-
-analyze_planned_vs_historical_patterns(planned_2025, historical_actual)
-
-# CELL 3: CALCULATE HISTORICAL VARIANCE PATTERNS
-# =========================================================================
-
+# ---------------
+# CELL 2: ANALYSIS
+# ---------------
 def calculate_historical_variance_patterns(historical_actual):
-    """Calculate variance patterns from historical data to predict actual vs plan variance"""
     print(f"\nCALCULATING HISTORICAL VARIANCE PATTERNS")
     print("="*60)
-    
-    print("HISTORICAL PERFORMANCE VARIABILITY ANALYSIS:")
-    
-    # Calculate year-over-year variance
     yearly_totals = historical_actual.groupby('Reporting_Year')['Student_Counts'].sum()
     yearly_growth = yearly_totals.pct_change().dropna() * 100
-    
-    print(f"\nYear-over-Year Growth Rates:")
-    for year, growth in yearly_growth.items():
-        print(f"   {year}: {growth:+.1f}%")
-    
-    growth_mean = yearly_growth.mean()
-    growth_std = yearly_growth.std()
-    
-    print(f"\nGrowth Statistics:")
-    print(f"   Average annual growth: {growth_mean:+.1f}%")
-    print(f"   Standard deviation: {growth_std:.1f}%")
-    print(f"   Typical range: {growth_mean - growth_std:+.1f}% to {growth_mean + growth_std:+.1f}%")
-    
-    # Monthly volatility analysis
-    print(f"\nMONTHLY VOLATILITY ANALYSIS:")
     monthly_cv = {}
-    month_names = {1: 'January', 2: 'February', 3: 'March', 4: 'April',
-                   5: 'May', 6: 'June', 7: 'July', 8: 'August',
-                   9: 'September', 10: 'October', 11: 'November', 12: 'December'}
-    
     for month_num in range(1, 13):
         monthly_data = historical_actual[historical_actual['Month_Num'] == month_num]['Student_Counts']
         if len(monthly_data) > 1:
             cv = monthly_data.std() / monthly_data.mean()
             monthly_cv[month_num] = cv
-            month_name = month_names[month_num]
-            print(f"   {month_name}: CV = {cv:.3f} ({'High' if cv > 0.2 else 'Medium' if cv > 0.1 else 'Low'} volatility)")
-    
-    # Overall variability assessment
     overall_cv = historical_actual['Student_Counts'].std() / historical_actual['Student_Counts'].mean()
-    print(f"\nOVERALL VARIABILITY:")
-    print(f"   Coefficient of variation: {overall_cv:.3f}")
-    
-    if overall_cv > 0.5:
-        volatility_level = "VERY HIGH"
-        prediction_note = "Actual results may vary significantly from plan"
-    elif overall_cv > 0.3:
-        volatility_level = "HIGH"
-        prediction_note = "Expect moderate variance from planned numbers"
-    elif overall_cv > 0.15:
-        volatility_level = "MODERATE"
-        prediction_note = "Actual results likely close to plan with some variance"
-    else:
-        volatility_level = "LOW"
-        prediction_note = "Actual results should be very close to plan"
-    
-    print(f"   Volatility level: {volatility_level}")
-    print(f"   Prediction confidence: {prediction_note}")
-    
     return yearly_growth, monthly_cv, overall_cv
 
-variance_stats = calculate_historical_variance_patterns(historical_actual)
-yearly_growth, monthly_cv, overall_cv = variance_stats
-
-# CELL 4: FORECAST ACTUAL 2025 RESULTS
-# =========================================================================
-
-def forecast_actual_2025_results(planned_2025, yearly_growth, monthly_cv, overall_cv):
-    """Forecast actual 2025 results based on planned data and historical variance"""
-    print(f"\nFORECASTING ACTUAL 2025 RESULTS")
+# ---------------
+# CELL 3: FORECASTING (SCENARIO, ANOMALY, ADAPTIVE)
+# ---------------
+def forecast_actual_2025_results(planned_2025, yearly_growth, monthly_cv, overall_cv, scenario='base', actuals_so_far=None):
+    print(f"\nFORECASTING ACTUAL 2025 RESULTS ({scenario.upper()} SCENARIO)")
     print("="*60)
-    
-    if len(planned_2025) == 0:
-        print("No planned 2025 data available for forecasting")
-        return None
-    
-    # Prepare planned 2025 data
-    month_mapping = {
-        'January': 1, 'Jan': 1, 'February': 2, 'Feb': 2,
-        'March': 3, 'Mar': 3, 'April': 4, 'Apr': 4,
-        'May': 5, 'June': 6, 'Jun': 6,
-        'July': 7, 'Jul': 7, 'August': 8, 'Aug': 8,
-        'September': 9, 'Sep': 9, 'October': 10, 'Oct': 10,
-        'November': 11, 'Nov': 11, 'December': 12, 'Dec': 12
-    }
-    
-    if planned_2025['Reporting_Month'].dtype == 'object':
-        planned_2025['Month_Num'] = planned_2025['Reporting_Month'].map(month_mapping)
+    month_mapping = {'January': 1, 'Jan': 1, 'February': 2, 'Feb': 2, 'March': 3, 'Mar': 3, 'April': 4, 'Apr': 4, 'May': 5, 'June': 6, 'Jun': 6, 'July': 7, 'Jul': 7, 'August': 8, 'Aug': 8, 'September': 9, 'Sep': 9, 'October': 10, 'Oct': 10, 'November': 11, 'Nov': 11, 'December': 12, 'Dec': 12}
+    planned_2025['Month_Num'] = planned_2025['Reporting_Month'].map(month_mapping) if planned_2025['Reporting_Month'].dtype == 'object' else planned_2025['Reporting_Month']
+    month_names = {i: m for i, m in enumerate(['January','February','March','April','May','June','July','August','September','October','November','December'], 1)}
+    growth_mean, growth_std = yearly_growth.mean(), yearly_growth.std()
+    if scenario == 'best':
+        growth = growth_mean + growth_std
+        volatility_scale = 0.5
+    elif scenario == 'worst':
+        growth = growth_mean - growth_std
+        volatility_scale = 1.5
     else:
-        planned_2025['Month_Num'] = planned_2025['Reporting_Month']
-    
-    month_names = {1: 'January', 2: 'February', 3: 'March', 4: 'April',
-                   5: 'May', 6: 'June', 7: 'July', 8: 'August',
-                   9: 'September', 10: 'October', 11: 'November', 12: 'December'}
-    
-    # Create forecast based on historical variance patterns
+        growth = growth_mean
+        volatility_scale = 1.0
+
     forecast_results = []
-    
-    print("FORECASTING METHODOLOGY:")
-    print("   Using historical variance patterns to adjust planned numbers")
-    print("   Applying month-specific volatility adjustments")
-    print("   Incorporating overall growth trend uncertainty")
-    
-    # Apply variance-based adjustments
-    growth_mean = yearly_growth.mean()
-    growth_std = yearly_growth.std()
-    
-    print(f"\nACTUAL 2025 ENROLLMENT FORECASTS:")
-    print("="*70)
-    
-    for _, row in planned_2025.iterrows():
+    for idx, row in planned_2025.iterrows():
         month_num = row['Month_Num']
-        month_name = month_names[month_num]
         planned_value = row['Student_Counts']
-        
-        # Get month-specific volatility
-        month_cv = monthly_cv.get(month_num, overall_cv)
-        
-        # Calculate forecast adjustments
-        # Base forecast: planned value with growth trend adjustment
-        trend_adjustment = 1 + (growth_mean / 100)
-        base_forecast = planned_value * trend_adjustment
-        
-        # Confidence intervals based on historical volatility
-        volatility_range = base_forecast * month_cv
-        lower_ci = max(0, base_forecast - volatility_range * 1.96)  # 95% CI
-        upper_ci = base_forecast + volatility_range * 1.96
-        
-        # Assign confidence rating based on month volatility
-        if month_cv < 0.1:
-            confidence = "High"
-        elif month_cv < 0.2:
-            confidence = "Medium"
-        elif month_cv < 0.4:
-            confidence = "Low"
+        # Adaptive: Replace planned with actual if available
+        if actuals_so_far is not None and month_num in actuals_so_far:
+            base_forecast = actuals_so_far[month_num]
+            anomaly_flag = False
+            confidence = "Actual"
+            lower_ci, upper_ci = base_forecast, base_forecast
+            variance_pct = 0
         else:
-            confidence = "Very Low"
-        
+            month_cv = monthly_cv.get(month_num, overall_cv) * volatility_scale
+            trend_adjustment = 1 + (growth / 100)
+            base_forecast = planned_value * trend_adjustment
+            volatility_range = base_forecast * month_cv
+            lower_ci = max(0, base_forecast - volatility_range * 1.96)
+            upper_ci = base_forecast + volatility_range * 1.96
+            confidence = "High" if month_cv < 0.1 else "Medium" if month_cv < 0.2 else "Low" if month_cv < 0.4 else "Very Low"
+            variance_pct = ((base_forecast - planned_value) / planned_value) * 100
+            anomaly_flag = abs(variance_pct) > 2 * growth_std
         forecast_results.append({
             'Month_Num': month_num,
-            'Month': month_name,
+            'Month': month_names[month_num],
             'Planned': planned_value,
             'Forecasted_Actual': int(base_forecast),
             'Lower_CI': int(lower_ci),
             'Upper_CI': int(upper_ci),
             'Confidence': confidence,
             'Variance_from_Plan': int(base_forecast - planned_value),
-            'Variance_Pct': ((base_forecast - planned_value) / planned_value) * 100
+            'Variance_Pct': variance_pct,
+            'Scenario': scenario.title(),
+            'Anomaly_Flag': anomaly_flag
         })
-        
-        print(f"   {month_name:>10}: Plan={planned_value:>7,} → Forecast={int(base_forecast):>7,} ({confidence:>6})")
-    
-    # Create forecast DataFrame
-    forecast_df = pd.DataFrame(forecast_results)
-    
-    # Summary statistics
-    total_planned = forecast_df['Planned'].sum()
-    total_forecasted = forecast_df['Forecasted_Actual'].sum()
-    total_variance = total_forecasted - total_planned
-    total_variance_pct = (total_variance / total_planned) * 100
-    
-    print(f"\n2025 FORECAST SUMMARY:")
-    print(f"   Total planned: {total_planned:,} students")
-    print(f"   Total forecasted actual: {total_forecasted:,} students")
-    print(f"   Expected variance: {total_variance:+,} students ({total_variance_pct:+.1f}%)")
-    
-    # Confidence assessment
-    high_conf = len(forecast_df[forecast_df['Confidence'] == 'High'])
-    medium_conf = len(forecast_df[forecast_df['Confidence'] == 'Medium'])
-    low_conf = len(forecast_df[forecast_df['Confidence'].isin(['Low', 'Very Low'])])
-    
-    print(f"\nFORECAST RELIABILITY:")
-    print(f"   High confidence months: {high_conf}/12")
-    print(f"   Medium confidence months: {medium_conf}/12")
-    print(f"   Low confidence months: {low_conf}/12")
-    
-    return forecast_df
+    return pd.DataFrame(forecast_results)
 
-actual_2025_forecast = forecast_actual_2025_results(planned_2025, yearly_growth, monthly_cv, overall_cv)
+# Optional: SARIMA forecast for comparison
+def sarima_forecast(ts_historical):
+    model = SARIMAX(ts_historical, order=(1,1,1), seasonal_order=(0,1,1,12))
+    results = model.fit(disp=False)
+    forecast = results.get_forecast(steps=12)
+    forecast_mean = forecast.predicted_mean
+    conf_int = forecast.conf_int(alpha=0.05)
+    return forecast_mean, conf_int
 
-# CELL 5: DETAILED VARIANCE ANALYSIS
-# =========================================================================
-
-def create_detailed_variance_analysis(actual_2025_forecast):
-    """Create detailed variance analysis between plan and forecasted actual"""
-    print(f"\nDETAILED PLAN vs ACTUAL VARIANCE ANALYSIS")
-    print("="*70)
-    
-    if actual_2025_forecast is None:
-        print("No forecast data available for variance analysis")
-        return
-    
-    print("MONTHLY PLAN vs FORECASTED ACTUAL:")
-    print("="*80)
-    display_cols = ['Month', 'Planned', 'Forecasted_Actual', 'Variance_from_Plan', 'Variance_Pct', 'Confidence']
-    print(actual_2025_forecast[display_cols].to_string(index=False))
-    
-    # Identify months with significant variances
-    significant_variances = actual_2025_forecast[abs(actual_2025_forecast['Variance_Pct']) > 5]
-    
-    print(f"\nMONTHS WITH SIGNIFICANT VARIANCES (>5%):")
-    if len(significant_variances) > 0:
-        for _, row in significant_variances.iterrows():
-            direction = "above" if row['Variance_Pct'] > 0 else "below"
-            print(f"   {row['Month']}: {row['Variance_Pct']:+.1f}% ({direction} plan)")
-    else:
-        print("   No months with significant variances expected")
-    
-    # Risk assessment
-    print(f"\nRISK ASSESSMENT:")
-    
-    # Upside potential
-    positive_variances = actual_2025_forecast[actual_2025_forecast['Variance_from_Plan'] > 0]
-    upside_potential = positive_variances['Variance_from_Plan'].sum()
-    
-    # Downside risk
-    negative_variances = actual_2025_forecast[actual_2025_forecast['Variance_from_Plan'] < 0]
-    downside_risk = abs(negative_variances['Variance_from_Plan'].sum())
-    
-    print(f"   Upside potential: +{upside_potential:,} students")
-    print(f"   Downside risk: -{downside_risk:,} students")
-    
-    if upside_potential > downside_risk:
-        print("   Net outlook: POSITIVE - more upside than downside expected")
-    elif downside_risk > upside_potential:
-        print("   Net outlook: CAUTIOUS - more downside risk than upside")
-    else:
-        print("   Net outlook: BALANCED - upside and downside roughly equal")
-    
-    # Seasonal risk analysis
-    q1_months = actual_2025_forecast[actual_2025_forecast['Month_Num'].isin([1,2,3])]
-    q1_variance = q1_months['Variance_from_Plan'].sum()
-    
-    print(f"\nSEASONAL RISK ANALYSIS:")
-    print(f"   Q1 (Jan-Mar) expected variance: {q1_variance:+,} students")
-    
-    if abs(q1_variance) > 5000:
-        print("   Q1 RISK: Significant variance expected in peak enrollment period")
-    else:
-        print("   Q1 STABILITY: Peak enrollment period variance manageable")
-
-create_detailed_variance_analysis(actual_2025_forecast)
-
-# CELL 6: VISUALIZATION AND RECOMMENDATIONS
-# =========================================================================
-
-def create_plan_vs_actual_visualization(actual_2025_forecast, ts_historical):
-    """Create comprehensive visualization of plan vs actual analysis"""
-    print(f"\nCREATING PLAN vs ACTUAL VISUALIZATION")
-    print("="*50)
-    
-    if actual_2025_forecast is None:
-        print("No forecast data available for visualization")
-        return
-    
-    fig, axes = plt.subplots(2, 2, figsize=(18, 12))
-    
-    # Plot 1: Historical trend + 2025 plan vs forecast
-    axes[0,0].plot(ts_historical.index, ts_historical.values, 
-                   marker='o', linewidth=2, label='Historical Actual', color='blue')
-    
-    # Add 2025 planned and forecasted data
-    months_2025 = pd.to_datetime([f'2025-{m:02d}-01' for m in actual_2025_forecast['Month_Num']])
-    
-    axes[0,0].plot(months_2025, actual_2025_forecast['Planned'], 
-                   marker='s', linewidth=2, markersize=6, 
-                   label='2025 Planned', color='green', linestyle='--')
-    
-    axes[0,0].plot(months_2025, actual_2025_forecast['Forecasted_Actual'], 
-                   marker='^', linewidth=3, markersize=8,
-                   label='2025 Forecasted Actual', color='red')
-    
-    axes[0,0].set_title('Historical Actual vs 2025 Plan vs Forecasted Actual', fontweight='bold')
-    axes[0,0].set_ylabel('Student Count')
-    axes[0,0].legend()
-    axes[0,0].grid(True, alpha=0.3)
-    axes[0,0].tick_params(axis='x', rotation=45)
-    
-    # Plot 2: Monthly plan vs forecast comparison
-    x_pos = range(len(actual_2025_forecast))
-    width = 0.35
-    
-    bars1 = axes[0,1].bar([x - width/2 for x in x_pos], actual_2025_forecast['Planned'], 
-                          width, label='Planned', color='green', alpha=0.7)
-    bars2 = axes[0,1].bar([x + width/2 for x in x_pos], actual_2025_forecast['Forecasted_Actual'], 
-                          width, label='Forecasted Actual', color='red', alpha=0.7)
-    
-    axes[0,1].set_title('2025 Monthly: Plan vs Forecasted Actual', fontweight='bold')
-    axes[0,1].set_ylabel('Student Count')
-    axes[0,1].set_xlabel('Month')
-    axes[0,1].set_xticks(x_pos)
-    axes[0,1].set_xticklabels(actual_2025_forecast['Month'], rotation=45)
-    axes[0,1].legend()
-    axes[0,1].grid(True, alpha=0.3, axis='y')
-    
-    # Plot 3: Variance analysis
-    colors = ['green' if x >= 0 else 'red' for x in actual_2025_forecast['Variance_from_Plan']]
-    bars3 = axes[1,0].bar(x_pos, actual_2025_forecast['Variance_from_Plan'], 
-                          color=colors, alpha=0.7, edgecolor='black')
-    
-    axes[1,0].axhline(y=0, color='black', linestyle='-', alpha=0.8)
-    axes[1,0].set_title('Monthly Variance: Forecasted vs Planned', fontweight='bold')
-    axes[1,0].set_ylabel('Variance (Students)')
-    axes[1,0].set_xlabel('Month')
-    axes[1,0].set_xticks(x_pos)
-    axes[1,0].set_xticklabels(actual_2025_forecast['Month'], rotation=45)
-    axes[1,0].grid(True, alpha=0.3, axis='y')
-    
-    # Plot 4: Confidence distribution
-    conf_counts = actual_2025_forecast['Confidence'].value_counts()
-    axes[1,1].pie(conf_counts.values, labels=conf_counts.index, autopct='%1.1f%%')
-    axes[1,1].set_title('Forecast Confidence Distribution', fontweight='bold')
-    
+# -------------------------------
+# CELL 4: VISUALIZATION
+# -------------------------------
+def create_plan_vs_actual_visualization(forecast_df, ts_historical, sarima_pred=None, sarima_ci=None):
+    months_2025 = pd.to_datetime([f'2025-{m:02d}-01' for m in forecast_df['Month_Num']])
+    plt.figure(figsize=(14,7))
+    plt.plot(ts_historical.index, ts_historical.values, marker='o', label='Historical Actual', color='blue')
+    plt.plot(months_2025, forecast_df['Planned'], marker='s', label='2025 Planned', color='green', linestyle='--')
+    plt.plot(months_2025, forecast_df['Forecasted_Actual'], marker='^', label='2025 Forecasted Actual', color='red')
+    plt.fill_between(months_2025, forecast_df['Lower_CI'], forecast_df['Upper_CI'], color='gray', alpha=0.2, label='95% CI')
+    if sarima_pred is not None and sarima_ci is not None:
+        plt.plot(months_2025, sarima_pred.values, label='SARIMA Forecast', color='purple', linestyle=':')
+        plt.fill_between(months_2025, sarima_ci.iloc[:,0], sarima_ci.iloc[:,1], color='purple', alpha=0.15, label='95% CI (SARIMA)')
+    for i, row in forecast_df.iterrows():
+        if row['Anomaly_Flag']:
+            plt.scatter(months_2025[i], row['Forecasted_Actual'], color='black', s=80, edgecolors='yellow', zorder=10, label='Anomaly' if i == 0 else None)
+    plt.title('Plan vs Forecasted Actuals for 2025 (with Confidence Intervals)')
+    plt.legend()
+    plt.xticks(months_2025, forecast_df['Month'], rotation=45)
+    plt.ylabel('Student Count')
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
-    print("Plan vs Actual visualization created!")
 
-def provide_planning_recommendations(actual_2025_forecast):
-    """Provide actionable planning recommendations"""
-    print(f"\nPLANNING RECOMMENDATIONS")
-    print("="*60)
-    
-    if actual_2025_forecast is None:
-        print("No forecast data available for recommendations")
-        return
-    
-    total_planned = actual_2025_forecast['Planned'].sum()
-    total_forecasted = actual_2025_forecast['Forecasted_Actual'].sum()
-    total_variance = total_forecasted - total_planned
-    
-    print(f"STRATEGIC PLANNING INSIGHTS:")
-    print(f"   Planned enrollment: {total_planned:,} students")
-    print(f"   Forecasted actual: {total_forecasted:,} students")
-    print(f"   Expected variance: {total_variance:+,} students")
-    
-    print(f"\nACTIONABLE RECOMMENDATIONS:")
-    
-    if total_variance > 0:
-        print(f"1. UPSIDE PREPARATION:")
-        print(f"   Prepare for {total_variance:+,} additional students")
-        print(f"   Ensure adequate capacity and resources")
-        print(f"   Consider expanding program offerings")
-        
-    elif total_variance < 0:
-        print(f"1. DOWNSIDE MITIGATION:")
-        print(f"   Prepare for {total_variance:,} fewer students than planned")
-        print(f"   Develop contingency plans for lower enrollment")
-        print(f"   Consider cost reduction strategies")
-    
-    print(f"\n2. MONTHLY MONITORING:")
-    print(f"   Track actual vs plan variance monthly")
-    print(f"   Update forecasts quarterly with actual results")
-    print(f"   Adjust resource allocation based on actual trends")
-    
-    print(f"\n3. RISK MANAGEMENT:")
-    high_risk_months = actual_2025_forecast[
-        (abs(actual_2025_forecast['Variance_Pct']) > 10) | 
-        (actual_2025_forecast['Confidence'].isin(['Low', 'Very Low']))
-    ]
-    
-    if len(high_risk_months) > 0:
-        print(f"   Focus on high-risk months:")
-        for _, row in high_risk_months.iterrows():
-            print(f"     {row['Month']}: {row['Variance_Pct']:+.1f}% variance, {row['Confidence']} confidence")
-    else:
-        print(f"   No high-risk months identified")
-    
-    print(f"\n4. PLANNING ACCURACY:")
-    avg_abs_variance = abs(actual_2025_forecast['Variance_Pct']).mean()
-    if avg_abs_variance < 5:
-        print(f"   EXCELLENT: Average variance <5% - planning is very accurate")
-    elif avg_abs_variance < 10:
-        print(f"   GOOD: Average variance <10% - planning is reasonably accurate")
-    else:
-        print(f"   REVIEW NEEDED: Average variance >10% - consider improving planning process")
+# -------------------------------
+# CELL 5: ACCURACY (OPTIONAL, when actuals are known)
+# -------------------------------
+def forecast_accuracy_metrics(actuals, forecast_df):
+    joined = forecast_df.copy()
+    joined['Actuals'] = actuals.values
+    joined['Abs_Error'] = np.abs(joined['Forecasted_Actual'] - joined['Actuals'])
+    joined['Abs_Pct_Error'] = joined['Abs_Error'] / joined['Actuals'] * 100
+    mae = joined['Abs_Error'].mean()
+    rmse = np.sqrt((joined['Abs_Error'] ** 2).mean())
+    mape = joined['Abs_Pct_Error'].mean()
+    return {'MAE': mae, 'RMSE': rmse, 'MAPE': mape}, joined
 
-# Create final visualizations and recommendations
-if actual_2025_forecast is not None:
-    create_plan_vs_actual_visualization(actual_2025_forecast, ts_historical)
-    provide_planning_recommendations(actual_2025_forecast)
+# =========================================================================
+# EXECUTION BLOCK (Run below, keep as-is, or split per notebook cell)
+# =========================================================================
+
+file_path = "abfs://folder2@printxpp.dfs.core.windows.net/scratch/opts/data.csv"
+complete_data, historical_actual, planned_2025 = load_and_separate_actual_planned_data(file_path)
+ts_historical, historical_prepared = prepare_variance_analysis_data(historical_actual)
+yearly_growth, monthly_cv, overall_cv = calculate_historical_variance_patterns(historical_actual)
+
+# --- Choose scenario: 'base', 'best', 'worst'
+actual_2025_forecast = forecast_actual_2025_results(planned_2025, yearly_growth, monthly_cv, overall_cv, scenario='base')
+
+# --- SARIMA overlay (optional)
+sarima_pred, sarima_ci = None, None
+try:
+    sarima_pred, sarima_ci = sarima_forecast(ts_historical)
+except Exception as e:
+    print(f"SARIMA not run: {e}")
+
+# --- Visualization
+create_plan_vs_actual_visualization(actual_2025_forecast, ts_historical, sarima_pred, sarima_ci)
+
+# --- (Optional) Accuracy metrics if 2025 partial actuals are available
+# actuals = pd.Series([...], index=actual_2025_forecast.index)
+# metrics, detailed_df = forecast_accuracy_metrics(actuals, actual_2025_forecast)
+# print(metrics)
 
 print("\n" + "="*70)
 print("PLAN vs ACTUAL FORECASTING COMPLETE!")
-print("   Analyzed planned 2025 data against historical patterns")
-print("   Forecasted actual 2025 results based on variance patterns")
-print("   Provided variance analysis and planning recommendations")
 print("="*70)
