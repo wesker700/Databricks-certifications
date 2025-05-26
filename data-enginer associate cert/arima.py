@@ -644,10 +644,95 @@ if not missing_columns:
         if forecast_results is not None:
             print("✅ Analysis completed successfully!")
             
-            # Display the clean prediction table with confidence ratings
-            print("\n📋 2025 ENROLLMENT PREDICTIONS WITH CONFIDENCE ANALYSIS:")
+            # ALWAYS display prediction table - even if the fancy one fails
+            print("\n📋 2025 ENROLLMENT PREDICTIONS:")
             print("="*80)
-            print(prediction_table.to_string(index=False))
+            
+            if prediction_table is not None:
+                print("Using detailed prediction table with confidence analysis:")
+                print(prediction_table.to_string(index=False))
+            else:
+                # Fallback: create simple prediction table
+                print("Using basic prediction table:")
+                simple_table = pd.DataFrame({
+                    'Month': forecast_results['Month'],
+                    'Predicted_Students': forecast_results['Forecast'].round(0).astype(int),
+                    'Lower_Bound': forecast_results['Lower_CI'].round(0).astype(int),
+                    'Upper_Bound': forecast_results['Upper_CI'].round(0).astype(int)
+                })
+                print(simple_table.to_string(index=False))
+            
+            # ALWAYS display timeseries data - even if visualization fails
+            print(f"\n📊 COMPLETE 2021-2025 TIME SERIES DATA:")
+            print("="*60)
+            
+            if complete_timeseries is not None:
+                print(f"Complete dataset with {len(complete_timeseries)} data points:")
+                # Show first few historical points
+                print("\nFirst 10 data points (Historical):")
+                print(complete_timeseries[['Date', 'Student_Counts', 'Type', 'Year']].head(10).to_string(index=False))
+                
+                # Show last few forecast points
+                print("\nLast 12 data points (2025 Forecasts):")
+                print(complete_timeseries[['Date', 'Student_Counts', 'Type', 'Year']].tail(12).to_string(index=False))
+                
+            else:
+                # Fallback: create simple timeseries from available data
+                print("Creating basic timeseries from available data:")
+                
+                # Get historical data from base_data
+                try:
+                    # Create date column for historical data
+                    base_data_copy = base_data.copy()
+                    
+                    # Convert month names to numbers for date creation
+                    month_mapping = {
+                        'January': 1, 'Jan': 1, 'February': 2, 'Feb': 2,
+                        'March': 3, 'Mar': 3, 'April': 4, 'Apr': 4,
+                        'May': 5, 'June': 6, 'Jun': 6,
+                        'July': 7, 'Jul': 7, 'August': 8, 'Aug': 8,
+                        'September': 9, 'Sep': 9, 'October': 10, 'Oct': 10,
+                        'November': 11, 'Nov': 11, 'December': 12, 'Dec': 12
+                    }
+                    
+                    if base_data_copy['Reporting_Month'].dtype == 'object':
+                        base_data_copy['Month_Num'] = base_data_copy['Reporting_Month'].map(month_mapping)
+                    else:
+                        base_data_copy['Month_Num'] = base_data_copy['Reporting_Month']
+                    
+                    base_data_copy['Date'] = pd.to_datetime({
+                        'year': base_data_copy['Reporting_Year'],
+                        'month': base_data_copy['Month_Num'],
+                        'day': 1
+                    })
+                    
+                    historical_df = pd.DataFrame({
+                        'Date': base_data_copy['Date'],
+                        'Student_Counts': base_data_copy['Student_Counts'],
+                        'Type': 'Historical'
+                    })
+                    
+                    # Add forecast data
+                    forecast_df = pd.DataFrame({
+                        'Date': forecast_results['Date'],
+                        'Student_Counts': forecast_results['Forecast'],
+                        'Type': 'Forecasted'
+                    })
+                    
+                    # Combine
+                    simple_timeseries = pd.concat([historical_df, forecast_df], ignore_index=True)
+                    simple_timeseries = simple_timeseries.sort_values('Date').reset_index(drop=True)
+                    
+                    print(f"Basic timeseries with {len(simple_timeseries)} data points:")
+                    print("First 10 points (Historical):")
+                    print(simple_timeseries.head(10).to_string(index=False))
+                    print("\nLast 12 points (2025 Forecasts):")
+                    print(simple_timeseries.tail(12).to_string(index=False))
+                    
+                except Exception as e:
+                    print(f"Could not create fallback timeseries: {e}")
+                    print("Showing just the forecast data:")
+                    print(forecast_results[['Date', 'Month', 'Forecast', 'Lower_CI', 'Upper_CI']].to_string(index=False))
             
             # Show key results for your academic calendar pattern
             print("\n🎯 KEY RESULTS FOR YOUR ENROLLMENT PATTERN:")
@@ -662,20 +747,15 @@ if not missing_columns:
             print(f"📅 March 2025:    {mar_forecast:>8.0f} students")
             print(f"📈 Feb→Mar surge: {((mar_forecast - feb_forecast) / feb_forecast * 100):>7.0f}%")
             
-            # Show sample of complete time series data
-            print(f"\n📊 Sample of Complete 2021-2025 Time Series Data:")
-            print("="*60)
-            sample_data = complete_timeseries[['Date', 'Student_Counts', 'Type', 'Month_Name', 'Year']].head(10)
-            print(sample_data.to_string(index=False))
-            print("...")
-            sample_data_end = complete_timeseries[['Date', 'Student_Counts', 'Type', 'Month_Name', 'Year']].tail(5)
-            print(sample_data_end.to_string(index=False))
-            
             print(f"\n💾 AVAILABLE DATA OBJECTS:")
-            print(f"   📈 complete_timeseries: Full 2021-2025 timeline ({len(complete_timeseries)} data points)")
-            print(f"   📋 prediction_table: Clean 2025 predictions with confidence ratings")
+            if complete_timeseries is not None:
+                print(f"   📈 complete_timeseries: Full 2021-2025 timeline ({len(complete_timeseries)} data points)")
+            if prediction_table is not None:
+                print(f"   📋 prediction_table: Clean 2025 predictions with confidence ratings")
             print(f"   🔮 forecast_results: Detailed 2025 forecasts with confidence intervals")
-            print(f"   🤖 model: Fitted SARIMA model for further analysis")
+            if model is not None:
+                print(f"   🤖 model: Fitted SARIMA model for further analysis")
+                
         else:
             print("❌ Analysis failed - model could not be fitted")
             
