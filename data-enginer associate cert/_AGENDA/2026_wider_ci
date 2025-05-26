@@ -1,62 +1,63 @@
-
-import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
-def make_2026_halfyear_forecast_from_2025(actual_2025_forecast, widen_factor=1.5):
-    """
-    Extend the 2025 forecast into Jan-Jun 2026 by rolling forward the mean and volatility,
-    with wider confidence intervals to represent lower certainty.
-    """
-    # Use last 3 months of 2025 as base for 2026 trend, or mean of 2025
-    base_level = actual_2025_forecast['Forecasted_Actual'].mean()
-    base_cv = (actual_2025_forecast['Upper_CI'] - actual_2025_forecast['Lower_CI']).mean() / base_level / 2
-    
-    # We'll just trend the forecast flat for demonstration
-    months = ['January', 'February', 'March', 'April', 'May', 'June']
-    month_nums = list(range(1, 7))
-    forecasted_actuals = [int(base_level)] * 6
-    
-    # Make confidence intervals wider for 2026
-    volatility = base_cv * widen_factor
-    
-    lower_cis = [int(x - x * volatility * 1.96) for x in forecasted_actuals]
-    upper_cis = [int(x + x * volatility * 1.96) for x in forecasted_actuals]
-    
-    return pd.DataFrame({
-        'Month': months,
-        'Month_Num': month_nums,
-        'Forecasted_Actual': forecasted_actuals,
-        'Lower_CI': lower_cis,
-        'Upper_CI': upper_cis
-    })
+# 1. Prepare your time series
+# ts_historical should be a pd.Series with a DatetimeIndex and monthly frequency
+# For example: ts_historical = pd.Series(..., index=pd.date_range(..., freq='MS'))
 
-def plot_forecast_fade_2026(df_2025, df_2026):
-    # Sort and get date indices
-    df_2025 = df_2025.sort_values('Month_Num').reset_index(drop=True)
-    df_2026 = df_2026.sort_values('Month_Num').reset_index(drop=True)
+# 2. Fit SARIMA using auto_arima for convenience
+from pmdarima import auto_arima
+
+auto_model = auto_arima(ts_historical, seasonal=True, m=12, trace=True, suppress_warnings=True, stepwise=True)
+# Print the selected order if you want to inspect
+print(f"Best ARIMA order: {auto_model.order}, seasonal order: {auto_model.seasonal_order}")
+
+# 3. Forecast next 18 months (Jan 2025 – Jun 2026)
+n_periods = 18
+sarima_pred, sarima_ci = auto_model.predict(n_periods=n_periods, return_conf_int=True, alpha=0.05)
+
+# 4. Create forecast DataFrame
+last_month = ts_historical.index[-1]
+forecast_months = pd.date_range(last_month + pd.offsets.MonthBegin(1), periods=n_periods, freq='MS')
+
+forecast_df = pd.DataFrame({
+    'Year': forecast_months.year,
+    'Month': forecast_months.strftime('%B'),
+    'Month_Num': forecast_months.month,
+    'Forecasted_Actual': sarima_pred,
+    'Lower_CI': sarima_ci[:, 0],
+    'Upper_CI': sarima_ci[:, 1],
+})
+
+# 5. Split into 2025 and H1 2026 for plotting
+actual_2025_forecast = forecast_df[forecast_df['Year'] == 2025].reset_index(drop=True)
+forecast_2026_halfyear = forecast_df[(forecast_df['Year'] == 2026) & (forecast_df['Month_Num'] <= 6)].reset_index(drop=True)
+
+
+#cell 2 plotting
+
+def plot_forecast_fade_2026(df_2025, df_2026, ts_historical):
     months_2025 = pd.to_datetime([f'2025-{m:02d}-01' for m in df_2025['Month_Num']])
     months_2026 = pd.to_datetime([f'2026-{m:02d}-01' for m in df_2026['Month_Num']])
 
     plt.figure(figsize=(14,6))
-
-    # Plot 2025 (solid lines and ribbon)
+    # Historical actuals
+    plt.plot(ts_historical.index, ts_historical.values, marker='o', color='blue', label='Historical Actual (2021–2024)', linewidth=2)
+    # 2025 Forecast
     plt.plot(months_2025, df_2025['Forecasted_Actual'], marker='o', color='red', label='2025 Forecast')
     plt.fill_between(months_2025, df_2025['Lower_CI'], df_2025['Upper_CI'], color='gray', alpha=0.3, label='2025 95% CI')
-
-    # Plot 2026 (fade: lighter color, wider CI, dashed line)
+    # 2026 Forecast (faded band, dashed line)
     plt.plot(months_2026, df_2026['Forecasted_Actual'], marker='o', color='orange', linestyle='--', label='2026 Forecast')
     plt.fill_between(months_2026, df_2026['Lower_CI'], df_2026['Upper_CI'], color='orange', alpha=0.15, label='2026 95% CI (Lower Confidence)')
-
-    # Highlight 2025/2026 boundary
+    # Boundary and labels
     plt.axvline(months_2026[0], color='purple', linestyle='--', linewidth=2, alpha=0.7)
     plt.text(months_2026[0], plt.ylim()[0], "2026", color='purple', fontsize=12, ha='left', va='bottom', alpha=0.9, fontweight='bold')
-
     # Month labels
-    all_months = list(months_2025) + list(months_2026)
+    all_months = list(ts_historical.index) + list(months_2025) + list(months_2026)
     month_labels = [f"{d.year}-{d.month:02d}" for d in all_months]
     plt.xticks(all_months, month_labels, rotation=45)
-
     plt.title('Forecast “Fade”: 2025 to 2026 with Growing Uncertainty')
     plt.xlabel('Month')
     plt.ylabel('Student Count')
@@ -65,7 +66,5 @@ def plot_forecast_fade_2026(df_2025, df_2026):
     plt.tight_layout()
     plt.show()
 
-# -------- Usage example ---------
-# Suppose you already have `actual_2025_forecast` from your forecasting process
-forecast_2026_halfyear = make_2026_halfyear_forecast_from_2025(actual_2025_forecast, widen_factor=1.7) # widen_factor increases 2026 CI
-plot_forecast_fade_2026(actual_2025_forecast, forecast_2026_halfyear)
+# Usage
+plot_forecast_fade_2026(actual_2025_forecast, forecast_2026_halfyear, ts_historical)
