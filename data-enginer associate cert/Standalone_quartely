@@ -74,9 +74,33 @@ def load_and_prepare_quarterly_data(file_path):
         'Date': 'min'
     }).reset_index()
     
-    # Create quarter labels and dates
+    print(f"📊 Debug - Quarterly summary shape: {quarterly_summary.shape}")
+    print(f"📊 Debug - Quarters found: {sorted(quarterly_summary['Quarter'].unique())}")
+    print(f"📊 Debug - Years found: {sorted(quarterly_summary['Year'].unique())}")
+    
+    # Create quarter labels and dates  
     quarterly_summary['Quarter_Label'] = quarterly_summary['Year'].astype(str) + '-Q' + quarterly_summary['Quarter'].astype(str)
-    quarterly_summary['Quarter_Date'] = pd.to_datetime(quarterly_summary[['Year', 'Quarter']].assign(Month=1, Day=1)) + pd.to_timedelta((quarterly_summary['Quarter']-1)*3, unit='M')
+    
+    # Create proper quarter start dates (simpler approach)
+    quarter_start_months = {1: 1, 2: 4, 3: 7, 4: 10}
+    quarterly_summary['Start_Month'] = quarterly_summary['Quarter'].map(quarter_start_months)
+    
+    try:
+        quarterly_summary['Quarter_Date'] = pd.to_datetime({
+            'year': quarterly_summary['Year'],
+            'month': quarterly_summary['Start_Month'], 
+            'day': 1
+        })
+        print("✅ Quarter dates created successfully")
+    except Exception as e:
+        print(f"❌ Error creating quarter dates: {e}")
+        # Fallback method
+        print("🔄 Using fallback date creation method...")
+        quarterly_summary['Quarter_Date'] = quarterly_summary.apply(
+            lambda row: pd.to_datetime(f"{row['Year']}-{quarter_start_months[row['Quarter']]}-01"), 
+            axis=1
+        )
+        print("✅ Fallback quarter dates created")
     
     # Create quarterly time series
     quarterly_ts = quarterly_summary.set_index('Quarter_Date')['Student_Counts']
@@ -242,7 +266,14 @@ def generate_2025_quarterly_forecasts(model, quarterly_ts, transformation):
     
     # Create forecast DataFrame
     forecast_quarters = ['2025-Q1', '2025-Q2', '2025-Q3', '2025-Q4']
-    forecast_dates = pd.date_range('2025-01-01', periods=4, freq='QS')
+    
+    # Create proper quarter dates
+    forecast_dates = [
+        pd.to_datetime('2025-01-01'),  # Q1 starts Jan 1
+        pd.to_datetime('2025-04-01'),  # Q2 starts Apr 1  
+        pd.to_datetime('2025-07-01'),  # Q3 starts Jul 1
+        pd.to_datetime('2025-10-01')   # Q4 starts Oct 1
+    ]
     
     quarterly_forecast_df = pd.DataFrame({
         'Quarter': forecast_quarters,
