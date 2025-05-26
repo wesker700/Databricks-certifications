@@ -1,0 +1,398 @@
+# =========================================================================
+# CELL 1: QUARTERLY AGGREGATION ANALYSIS
+# =========================================================================
+
+def convert_to_quarterly_data(ts, df):
+    """Convert monthly data to quarterly"""
+    print("📊 CONVERTING MONTHLY DATA TO QUARTERLY")
+    print("="*50)
+    
+    # Create quarterly data from time series
+    quarterly_data = []
+    
+    # Group by year and quarter
+    df_copy = df.copy()
+    df_copy['Quarter'] = df_copy['Date'].dt.quarter
+    df_copy['Year'] = df_copy['Date'].dt.year
+    
+    quarterly_summary = df_copy.groupby(['Year', 'Quarter']).agg({
+        'Student_Counts': 'sum',
+        'Date': 'min'  # Start date of quarter
+    }).reset_index()
+    
+    # Create quarter labels
+    quarterly_summary['Quarter_Label'] = quarterly_summary['Year'].astype(str) + '-Q' + quarterly_summary['Quarter'].astype(str)
+    quarterly_summary['Quarter_Date'] = pd.to_datetime(quarterly_summary[['Year', 'Quarter']].assign(Month=1, Day=1)) + pd.to_timedelta((quarterly_summary['Quarter']-1)*3, unit='M')
+    
+    print(f"✅ Converted {len(df)} monthly observations to {len(quarterly_summary)} quarterly observations")
+    print(f"Date range: {quarterly_summary['Quarter_Date'].min()} to {quarterly_summary['Quarter_Date'].max()}")
+    
+    # Create quarterly time series
+    quarterly_ts = quarterly_summary.set_index('Quarter_Date')['Student_Counts']
+    
+    return quarterly_ts, quarterly_summary
+
+def analyze_quarterly_benefits(monthly_ts, quarterly_ts):
+    """Analyze benefits of quarterly vs monthly data"""
+    print("\n🔍 QUARTERLY vs MONTHLY COMPARISON")
+    print("="*50)
+    
+    # Volatility comparison
+    monthly_cv = monthly_ts.std() / monthly_ts.mean()
+    quarterly_cv = quarterly_ts.std() / quarterly_ts.mean()
+    
+    print(f"📈 VOLATILITY ANALYSIS:")
+    print(f"   Monthly coefficient of variation: {monthly_cv:.3f}")
+    print(f"   Quarterly coefficient of variation: {quarterly_cv:.3f}")
+    print(f"   Volatility reduction: {((monthly_cv - quarterly_cv) / monthly_cv * 100):.1f}%")
+    
+    # Range analysis
+    monthly_range = monthly_ts.max() - monthly_ts.min()
+    quarterly_range = quarterly_ts.max() - quarterly_ts.min()
+    monthly_ratio = monthly_ts.max() / monthly_ts.min()
+    quarterly_ratio = quarterly_ts.max() / quarterly_ts.min()
+    
+    print(f"\n📊 RANGE ANALYSIS:")
+    print(f"   Monthly: Min={monthly_ts.min():,.0f}, Max={monthly_ts.max():,.0f}, Ratio={monthly_ratio:.1f}x")
+    print(f"   Quarterly: Min={quarterly_ts.min():,.0f}, Max={quarterly_ts.max():,.0f}, Ratio={quarterly_ratio:.1f}x")
+    print(f"   Extreme ratio reduction: {((monthly_ratio - quarterly_ratio) / monthly_ratio * 100):.1f}%")
+    
+    # Seasonal pattern comparison
+    print(f"\n🌊 SEASONAL PATTERN COMPARISON:")
+    print("Monthly seasonal extremes:")
+    for month in [1, 2, 3]:
+        month_avg = monthly_ts[monthly_ts.index.month == month].mean()
+        print(f"   Month {month}: {month_avg:,.0f} students")
+    
+    print("Quarterly seasonal pattern:")
+    for quarter in [1, 2, 3, 4]:
+        quarter_avg = quarterly_ts[quarterly_ts.index.quarter == quarter].mean()
+        print(f"   Q{quarter}: {quarter_avg:,.0f} students")
+    
+    return monthly_cv, quarterly_cv
+
+# Run quarterly conversion if data available
+if 'ts' in globals() and 'df' in globals() and ts is not None and df is not None:
+    quarterly_ts, quarterly_df = convert_to_quarterly_data(ts, df)
+    monthly_cv, quarterly_cv = analyze_quarterly_benefits(ts, quarterly_ts)
+    print(f"\n✅ Quarterly analysis complete!")
+else:
+    print("❌ No monthly data available. Run main analysis first.")
+
+# =========================================================================
+# CELL 2: QUARTERLY SARIMA MODELING
+# =========================================================================
+
+def fit_quarterly_sarima(quarterly_ts):
+    """Fit SARIMA model to quarterly data"""
+    print("🎯 FITTING SARIMA MODEL TO QUARTERLY DATA")
+    print("="*50)
+    
+    # Handle seasonality for quarterly data
+    quarterly_log = np.log(quarterly_ts + 1)
+    quarterly_sqrt = np.sqrt(quarterly_ts)
+    
+    cv_original = quarterly_ts.std() / quarterly_ts.mean()
+    cv_log = quarterly_log.std() / quarterly_log.mean()
+    cv_sqrt = quarterly_sqrt.std() / quarterly_sqrt.mean()
+    
+    print(f"🔄 Transformation analysis:")
+    print(f"   Original CV: {cv_original:.3f}")
+    print(f"   Log CV: {cv_log:.3f}")
+    print(f"   Sqrt CV: {cv_sqrt:.3f}")
+    
+    # Choose best transformation
+    if cv_log < cv_original and cv_log < cv_sqrt:
+        print("✅ Using LOG transformation")
+        ts_transformed = quarterly_log
+        transformation = 'log'
+    elif cv_sqrt < cv_original:
+        print("✅ Using SQRT transformation")
+        ts_transformed = quarterly_sqrt
+        transformation = 'sqrt'
+    else:
+        print("✅ Using ORIGINAL data")
+        ts_transformed = quarterly_ts
+        transformation = 'none'
+    
+    # Fit SARIMA models (seasonal period = 4 for quarterly)
+    best_model = None
+    best_aic = float('inf')
+    
+    configs = [
+        ((1,1,1), (1,1,1,4)),  # Quarterly seasonality
+        ((2,1,1), (1,1,1,4)),
+        ((1,1,2), (1,1,1,4)),
+        ((0,1,1), (0,1,1,4)),
+        ((1,1,0), (1,1,0,4)),
+    ]
+    
+    print(f"\n🎯 Testing SARIMA configurations for quarterly data:")
+    
+    for order, seasonal_order in configs:
+        try:
+            model = ARIMA(ts_transformed, order=order, seasonal_order=seasonal_order)
+            fitted = model.fit()
+            print(f"SARIMA{order}x{seasonal_order}[4] - AIC: {fitted.aic:.2f}")
+            
+            if fitted.aic < best_aic:
+                best_aic = fitted.aic
+                best_model = fitted
+                best_config = (order, seasonal_order)
+        except:
+            print(f"SARIMA{order}x{seasonal_order}[4] - Failed")
+    
+    if best_model:
+        print(f"\n✅ Best quarterly model: SARIMA{best_config[0]}x{best_config[1]}[4]")
+        print(f"   AIC: {best_aic:.2f}")
+        best_model.transformation = transformation
+        
+    return best_model, transformation
+
+def generate_quarterly_forecasts(model, quarterly_ts, transformation):
+    """Generate quarterly forecasts for 2025"""
+    print("\n🔮 GENERATING QUARTERLY FORECASTS FOR 2025")
+    print("="*50)
+    
+    # Generate 4 quarters of forecasts
+    forecast = model.forecast(steps=4)
+    conf_int = model.get_forecast(steps=4).conf_int()
+    
+    # Transform back if needed
+    if transformation == 'log':
+        forecast = np.exp(forecast) - 1
+        conf_int = np.exp(conf_int) - 1
+    elif transformation == 'sqrt':
+        forecast = forecast ** 2
+        conf_int = conf_int ** 2
+    
+    # Create forecast dates
+    forecast_dates = pd.date_range('2025-01-01', periods=4, freq='QS')
+    
+    quarterly_forecast_df = pd.DataFrame({
+        'Quarter_Date': forecast_dates,
+        'Quarter': ['2025-Q1', '2025-Q2', '2025-Q3', '2025-Q4'],
+        'Forecast': forecast.round(0),
+        'Lower_CI': conf_int.iloc[:, 0].round(0),
+        'Upper_CI': conf_int.iloc[:, 1].round(0)
+    })
+    
+    # Calculate confidence metrics
+    quarterly_forecast_df['CI_Width'] = quarterly_forecast_df['Upper_CI'] - quarterly_forecast_df['Lower_CI']
+    quarterly_forecast_df['Relative_CI_Width'] = (quarterly_forecast_df['CI_Width'] / quarterly_forecast_df['Forecast']) * 100
+    
+    # Assign confidence ratings
+    def assign_quarterly_confidence(rel_width):
+        if rel_width <= 15:
+            return "Very High"
+        elif rel_width <= 25:
+            return "High"
+        elif rel_width <= 40:
+            return "Medium"
+        elif rel_width <= 60:
+            return "Low"
+        else:
+            return "Very Low"
+    
+    quarterly_forecast_df['Confidence_Rating'] = quarterly_forecast_df['Relative_CI_Width'].apply(assign_quarterly_confidence)
+    
+    print("📋 2025 QUARTERLY ENROLLMENT FORECASTS:")
+    print(quarterly_forecast_df[['Quarter', 'Forecast', 'Lower_CI', 'Upper_CI', 'Confidence_Rating', 'Relative_CI_Width']].to_string(index=False))
+    
+    return quarterly_forecast_df
+
+# Run quarterly SARIMA if quarterly data available
+if 'quarterly_ts' in globals() and quarterly_ts is not None:
+    quarterly_model, quarterly_transformation = fit_quarterly_sarima(quarterly_ts)
+    
+    if quarterly_model is not None:
+        quarterly_forecast = generate_quarterly_forecasts(quarterly_model, quarterly_ts, quarterly_transformation)
+    else:
+        print("❌ Quarterly model fitting failed")
+else:
+    print("❌ No quarterly data available. Run Cell 1 first.")
+
+# =========================================================================
+# CELL 3: CONFIDENCE COMPARISON (MONTHLY vs QUARTERLY)
+# =========================================================================
+
+def compare_monthly_vs_quarterly_confidence():
+    """Compare confidence levels between monthly and quarterly forecasts"""
+    print("⚖️  CONFIDENCE COMPARISON: MONTHLY vs QUARTERLY")
+    print("="*60)
+    
+    # Monthly confidence summary (if available)
+    if 'forecast_df' in globals() and forecast_df is not None:
+        monthly_forecast = forecast_df
+        monthly_forecast['CI_Width'] = monthly_forecast['Upper_CI'] - monthly_forecast['Lower_CI']
+        monthly_forecast['Relative_CI_Width'] = (monthly_forecast['CI_Width'] / monthly_forecast['Forecast']) * 100
+        
+        monthly_avg_uncertainty = monthly_forecast['Relative_CI_Width'].mean()
+        monthly_high_confidence = len(monthly_forecast[monthly_forecast['Relative_CI_Width'] <= 20])
+        monthly_very_low = len(monthly_forecast[monthly_forecast['Relative_CI_Width'] > 50])
+        
+        print(f"📅 MONTHLY FORECAST CONFIDENCE:")
+        print(f"   Average uncertainty: {monthly_avg_uncertainty:.1f}%")
+        print(f"   High confidence months: {monthly_high_confidence}/12")
+        print(f"   Very low confidence months: {monthly_very_low}/12")
+    else:
+        print("📅 MONTHLY FORECAST: Not available")
+    
+    # Quarterly confidence summary (if available)
+    if 'quarterly_forecast' in globals() and quarterly_forecast is not None:
+        quarterly_avg_uncertainty = quarterly_forecast['Relative_CI_Width'].mean()
+        quarterly_high_confidence = len(quarterly_forecast[quarterly_forecast['Relative_CI_Width'] <= 25])
+        quarterly_very_low = len(quarterly_forecast[quarterly_forecast['Relative_CI_Width'] > 60])
+        
+        print(f"\n📊 QUARTERLY FORECAST CONFIDENCE:")
+        print(f"   Average uncertainty: {quarterly_avg_uncertainty:.1f}%")
+        print(f"   High confidence quarters: {quarterly_high_confidence}/4")
+        print(f"   Very low confidence quarters: {quarterly_very_low}/4")
+        
+        # Improvement calculation
+        if 'monthly_avg_uncertainty' in locals():
+            improvement = ((monthly_avg_uncertainty - quarterly_avg_uncertainty) / monthly_avg_uncertainty) * 100
+            print(f"\n🚀 IMPROVEMENT WITH QUARTERLY:")
+            print(f"   Uncertainty reduction: {improvement:.1f}%")
+            print(f"   Confidence improvement: {'Significant' if improvement > 30 else 'Moderate' if improvement > 15 else 'Minimal'}")
+    else:
+        print("📊 QUARTERLY FORECAST: Not available")
+
+# Run comparison
+compare_monthly_vs_quarterly_confidence()
+
+# =========================================================================
+# CELL 4: QUARTERLY BUSINESS ADVANTAGES
+# =========================================================================
+
+def analyze_quarterly_business_advantages():
+    """Analyze business advantages of quarterly forecasting"""
+    print("💼 BUSINESS ADVANTAGES OF QUARTERLY FORECASTING")
+    print("="*60)
+    
+    print("✅ OPERATIONAL ADVANTAGES:")
+    print("\n1️⃣ PLANNING ALIGNMENT:")
+    print("   • Most business planning is done quarterly")
+    print("   • Budget cycles typically follow quarters")
+    print("   • Executive reporting is often quarterly")
+    print("   • Strategic reviews happen quarterly")
+    
+    print("\n2️⃣ RESOURCE MANAGEMENT:")
+    print("   • Staffing plans can be more stable")
+    print("   • Capacity planning becomes more reliable")
+    print("   • Inventory/supply planning is easier")
+    print("   • Marketing budget allocation is smoother")
+    
+    print("\n3️⃣ UNCERTAINTY REDUCTION:")
+    print("   • Smoother confidence intervals")
+    print("   • Less extreme seasonal volatility")
+    print("   • More reliable for financial planning")
+    print("   • Better stakeholder communication")
+    
+    print("\n✅ ACADEMIC CALENDAR ADVANTAGES:")
+    print("\n4️⃣ NATURAL ALIGNMENT:")
+    print("   • Q1: Jan-Mar (includes major enrollment surge)")
+    print("   • Q2: Apr-Jun (post-enrollment stabilization)")
+    print("   • Q3: Jul-Sep (summer programs/preparation)")
+    print("   • Q4: Oct-Dec (planning for next year)")
+    
+    print("\n5️⃣ ENROLLMENT LIFECYCLE:")
+    print("   • Q1: Peak enrollment period")
+    print("   • Q2: Active learning period")
+    print("   • Q3: Mid-year assessments")
+    print("   • Q4: Year-end and planning")
+    
+    print("\n⚠️  CONSIDERATIONS:")
+    print("\n6️⃣ POTENTIAL DRAWBACKS:")
+    print("   • Less granular for month-to-month operations")
+    print("   • May miss important monthly trends")
+    print("   • Slower reaction to changes")
+    print("   • Less data points for model training")
+    
+    print("\n7️⃣ HYBRID APPROACH OPTION:")
+    print("   • Use quarterly for strategic planning")
+    print("   • Use monthly for operational planning")
+    print("   • Monthly actuals vs quarterly forecasts")
+    print("   • Update quarterly forecasts monthly")
+
+analyze_quarterly_business_advantages()
+
+# =========================================================================
+# CELL 5: RECOMMENDATION SUMMARY
+# =========================================================================
+
+def provide_quarterly_recommendation():
+    """Provide final recommendation on quarterly vs monthly"""
+    print("🎯 FINAL RECOMMENDATION: QUARTERLY vs MONTHLY")
+    print("="*60)
+    
+    print("📊 ANALYSIS SUMMARY:")
+    
+    # Volatility improvement
+    if 'monthly_cv' in globals() and 'quarterly_cv' in globals():
+        volatility_improvement = ((monthly_cv - quarterly_cv) / monthly_cv) * 100
+        print(f"   • Volatility reduction: {volatility_improvement:.1f}%")
+    
+    # Confidence improvement  
+    if 'quarterly_forecast' in globals() and 'forecast_df' in globals():
+        monthly_uncertainty = forecast_df['Relative_CI_Width'].mean() if 'forecast_df' in globals() else 0
+        quarterly_uncertainty = quarterly_forecast['Relative_CI_Width'].mean()
+        confidence_improvement = ((monthly_uncertainty - quarterly_uncertainty) / monthly_uncertainty) * 100
+        print(f"   • Confidence improvement: {confidence_improvement:.1f}%")
+    
+    print(f"\n🏆 RECOMMENDATION:")
+    
+    if ('volatility_improvement' in locals() and volatility_improvement > 30) or \
+       ('confidence_improvement' in locals() and confidence_improvement > 30):
+        recommendation = "STRONGLY RECOMMEND QUARTERLY"
+        reasoning = "Significant improvements in confidence and stability"
+    elif ('volatility_improvement' in locals() and volatility_improvement > 15) or \
+         ('confidence_improvement' in locals() and confidence_improvement > 15):
+        recommendation = "RECOMMEND QUARTERLY"
+        reasoning = "Moderate improvements justify the change"
+    else:
+        recommendation = "CONSIDER HYBRID APPROACH"
+        reasoning = "Benefits exist but may not justify losing monthly granularity"
+    
+    print(f"   🎯 {recommendation}")
+    print(f"   💡 Reason: {reasoning}")
+    
+    print(f"\n📋 IMPLEMENTATION STRATEGY:")
+    
+    if "STRONGLY RECOMMEND" in recommendation or "RECOMMEND" in recommendation:
+        print("   1️⃣ Switch to quarterly forecasting for:")
+        print("      • Strategic planning and budgeting")
+        print("      • Executive reporting")
+        print("      • Capacity planning")
+        print("      • Financial forecasting")
+        
+        print("   2️⃣ Keep monthly tracking for:")
+        print("      • Operational monitoring")
+        print("      • Early warning signals")
+        print("      • Performance tracking")
+        
+        print("   3️⃣ Forecast schedule:")
+        print("      • Generate quarterly forecasts")
+        print("      • Update monthly with actuals")
+        print("      • Reforecast quarterly as needed")
+        
+    else:
+        print("   1️⃣ Use monthly for operational planning")
+        print("   2️⃣ Aggregate to quarterly for strategic planning")
+        print("   3️⃣ Report both levels to different audiences")
+    
+    print(f"\n✅ NEXT STEPS:")
+    print("   • Test quarterly forecasting for next 2-3 quarters")
+    print("   • Compare accuracy against monthly forecasts")
+    print("   • Adjust confidence thresholds for your data")
+    print("   • Train stakeholders on quarterly planning")
+
+provide_quarterly_recommendation()
+
+print("\n" + "="*70)
+print("🎯 KEY INSIGHT: Your extreme seasonality (600→37k) is much better")
+print("   suited for quarterly aggregation. This will give you:")
+print("   • Better confidence ratings")
+print("   • More stable planning")
+print("   • Alignment with business cycles")
+print("="*70)
